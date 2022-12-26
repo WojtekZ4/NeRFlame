@@ -21,8 +21,16 @@ from load_LINEMOD import load_LINEMOD_data
 # FLAME zone
 sys.path.append('./FLAME/')
 from FLAME import FLAME
+from os.path import join
+from pytorch3d import _C
+from pytorch3d.structures import Meshes, Pointclouds
+
+import tensorflow as tf
+from torch.distributions import Normal
+import datetime
 
 # FLAME zone
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -58,12 +66,13 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
     return outputs
 
 
-def batchify_rays(f_vert, rays_flat, chunk=1024 * 32, **kwargs):
+def batchify_rays(f_vert, f_faces, rays_flat, chunk=1024 * 32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(f_vert, rays_flat[i:i + chunk], **kwargs)
+        ret = render_rays(f_vert, f_faces, rays_flat[i:i + chunk], **kwargs)
+        torch.cuda.empty_cache()
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -73,7 +82,7 @@ def batchify_rays(f_vert, rays_flat, chunk=1024 * 32, **kwargs):
     return all_ret
 
 
-def render(f_vert, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+def render(f_vert, f_faces, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
@@ -130,7 +139,7 @@ def render(f_vert, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
         rays = torch.cat([rays, viewdirs], -1)
 
     # Render and reshape
-    all_ret = batchify_rays(f_vert, rays, chunk, **kwargs)
+    all_ret = batchify_rays(f_vert, f_faces, rays, chunk, **kwargs)
     for k in all_ret:
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
@@ -141,7 +150,8 @@ def render(f_vert, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
     return ret_list + [ret_dict]
 
 
-def render_path(f_vert, render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
+def render_path(f_vert, f_faces, render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None,
+                render_factor=0):
     H, W, focal = hwf
 
     if render_factor != 0:
@@ -157,7 +167,7 @@ def render_path(f_vert, render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, disp, acc, _ = render(f_vert, H, W, K, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
+        rgb, disp, acc, _ = render(f_vert, f_faces, H, W, K, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         if i == 0:
@@ -259,7 +269,7 @@ def create_nerf(args):
         render_kwargs_train['lindisp'] = args.lindisp
 
     render_kwargs_test = {k: render_kwargs_train[k] for k in render_kwargs_train}
-    render_kwargs_test['perturb'] = False
+    render_kwargs_test['perturb'] = 1.
     render_kwargs_test['raw_noise_std'] = 0.
 
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
@@ -324,19 +334,117 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 #                                                                           mesh_points)
 #     return distances
 
+_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-3
+
+
+# Stolen from pytorch3d
+def point_mesh_face_distance(
+        meshes: Meshes,
+        pcls: Pointclouds,
+        min_triangle_area: float = _DEFAULT_MIN_TRIANGLE_AREA,
+):
+    if len(meshes) != len(pcls):
+        raise ValueError("meshes and pointclouds must be equal sized batches")
+    N = len(meshes)
+
+    # packed representation for pointclouds
+    points = pcls.points_packed()  # (P, 3)
+    points_first_idx = pcls.cloud_to_packed_first_idx()
+    max_points = pcls.num_points_per_cloud().max().item()
+
+    # packed representation for faces
+    verts_packed = meshes.verts_packed()
+    faces_packed = meshes.faces_packed()
+    tris = verts_packed[faces_packed]  # (T, 3, 3)
+    tris_first_idx = meshes.mesh_to_faces_packed_first_idx()
+    max_tris = meshes.num_faces_per_mesh().max().item()
+
+    # point to face distance: shape (P,)
+    # point_to_face = point_face_distance(
+    #     points, points_first_idx, tris, tris_first_idx, max_points, min_triangle_area
+    # )
+    dists, idxs = _C.point_face_dist_forward(
+        points, points_first_idx, tris, tris_first_idx, max_points, min_triangle_area
+    )
+    return dists, idxs
+
 
 def distance_calculator(set_of_coordinates, mesh_points):
     return torch.cdist(set_of_coordinates, mesh_points)
 
 
-def FLAME_based_alpha_calculator(distances, m, e):
+def FLAME_based_alpha_calculator_v_relu(distances, m, e):
     min_d, _ = torch.min(distances, 2)
     # fun = lambda dis_min: 1 - ((m(dis_min) / e) - (m(dis_min - e) / e))
     alpha = 1 - ((m(min_d) / e) - (m(min_d - e) / e))
     return alpha
 
 
+def sigma(x, epsilon):
+    # Create a Normal distribution with mean 0 and standard deviation epsilon
+    dist = Normal(0, epsilon)
+
+    return torch.exp(dist.log_prob(x)) / torch.exp(dist.log_prob(torch.tensor(0)))
+
+
+def FLAME_based_alpha_calculator_v_gauss(distances, m, e):
+    min_d, _ = torch.min(distances, 2)
+    alpha = sigma(min_d, epsilon=e)
+    return alpha
+
+
+def FLAME_based_alpha_calculator_v_solid(distances, m, e):
+    min_d, _ = torch.min(distances, 2)
+
+    alpha = torch.where(min_d <= e, torch.tensor(1), torch.tensor(0))
+    return alpha
+
+
+def FLAME_based_alpha_calculator_f_relu(min_d, m, e):
+    alpha = 1 - ((m(min_d) / e) - (m(min_d - e) / e))
+    return alpha
+
+
+def FLAME_based_alpha_calculator_f_gauss(min_d, m, e):
+    alpha = sigma(min_d, epsilon=e)
+    return alpha
+
+
+def FLAME_based_alpha_calculator_f_solid(min_d, m, e):
+    alpha = torch.where(min_d <= e, torch.tensor(1), torch.tensor(0))
+    return alpha
+
+
+# def FLAME_based_alpha_calculator_2(set_of_coordinates, mesh_points, m, e):
+#     min_d, _ = torch.min(torch.cdist(set_of_coordinates, mesh_points), 2)
+#     # fun = lambda dis_min: 1 - ((m(dis_min) / e) - (m(dis_min - e) / e))
+#     alpha = 1 - ((m(min_d) / e) - (m(min_d - e) / e))
+#     return alpha
+
+
+def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points, mesh_faces, m, e):
+    # print('mesh_points',mesh_points)
+    # print('mesh_faces', mesh_faces)
+    mesh_points = [mesh_points]
+    mesh_faces = [mesh_faces]
+    # print('mesh_points', mesh_points)
+    # print('mesh_faces', mesh_faces)
+    set_of_coordinates_size = set_of_coordinates.size()
+    set_of_coordinates = [torch.flatten(set_of_coordinates, 0, 1)]
+
+    p_mesh = Meshes(verts=mesh_points, faces=mesh_faces)
+    p_points = Pointclouds(points=set_of_coordinates)
+
+    dists, idxs = point_mesh_face_distance(p_mesh, p_points)
+    dists = torch.sqrt(dists)
+    dists, idxs = torch.reshape(dists, (set_of_coordinates_size[0], set_of_coordinates_size[1])), \
+                  torch.reshape(idxs, (set_of_coordinates_size[0], set_of_coordinates_size[1]))
+
+    return dists, idxs
+
+
 def render_rays(f_vert,
+                f_faces,
                 ray_batch,
                 network_fn,
                 network_query_fn,
@@ -411,18 +519,33 @@ def render_rays(f_vert,
         z_vals = lower + (upper - lower) * t_rand
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
+    # print('pts ',pts.size())
+    # print('f_vert ', f_vert.size())
     m = torch.nn.ReLU()
-    e = torch.tensor(0.1)
-    distances = distance_calculator(pts, f_vert)
-    alpha = FLAME_based_alpha_calculator(distances, m, e)
+    eps = torch.tensor(0.06)
+    distances_v = distance_calculator(pts, f_vert)
+
+    alpha_v = FLAME_based_alpha_calculator_v_relu(distances_v, m, eps)
+    # alpha_v = FLAME_based_alpha_calculator_v_gauss(distances_v, m, eps)
+    # alpha_v = FLAME_based_alpha_calculator_v_solid(distances_v, m, eps)
+    # distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces, m, eps)
+    # alpha_f = FLAME_based_alpha_calculator_f_relu(distances_f, m, eps)
+    # alpha_f = FLAME_based_alpha_calculator_f_gauss(distances_f, m, eps)
+    # alpha_f = FLAME_based_alpha_calculator_f_solid(distances_f, m, eps)
+    # distances_v = torch.cat((distances_v, torch.unsqueeze(alpha_f, 2)), dim=-1)
+    # torch.save(distances_v, 'distances_v.txt')
+    # torch.save(alpha_v, 'alpha_v.txt')
+    # torch.save(distances_f, 'distances_f.txt')
+    # torch.save(alpha_f, 'alpha_f.txt')
+    # alpha=FLAME_based_alpha_calculator_2(pts, f_vert, m, e)
     # print('pts',pts)
     # print('pts_s', pts.size())
     # print('viewdirs', viewdirs)
     # print('viewdirs_s', viewdirs.size())
     #     raw = run_network(pts)
-    raw = network_query_fn(distances, viewdirs, network_fn)
+    raw = network_query_fn(distances_v, viewdirs, network_fn)
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                 pytest=pytest, alpha_overide=alpha)
+                                                                 pytest=pytest, alpha_overide=alpha_v)
 
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
@@ -434,14 +557,24 @@ def render_rays(f_vert,
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
-        distances = distance_calculator(pts, f_vert)
-        alpha = FLAME_based_alpha_calculator(distances, m, e)
+        distances_v = distance_calculator(pts, f_vert)
+        alpha_v = FLAME_based_alpha_calculator_v_relu(distances_v, m, eps)
+        # alpha_v = FLAME_based_alpha_calculator_v_gauss(distances_v, m, eps)
+        # alpha_v = FLAME_based_alpha_calculator_v_solid(distances_v, m, eps)
+
+        # distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces, m, eps)
+        # alpha_f = FLAME_based_alpha_calculator_f_relu(distances_f, m, eps)
+        # alpha_f = FLAME_based_alpha_calculator_f_gauss(distances_f, m, eps)
+        # alpha_f = FLAME_based_alpha_calculator_f_solid(distances_f, m, eps)
+        # distances_v = torch.cat((distances_v, torch.unsqueeze(alpha_f, 2)), dim=-1)
+        # alpha = FLAME_based_alpha_calculator_2(pts, f_vert, m, e)
+
         run_fn = network_fn if network_fine is None else network_fine
         #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(distances, viewdirs, run_fn)
+        raw = network_query_fn(distances_v, viewdirs, run_fn)
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                     pytest=pytest, alpha_overide=alpha)
+                                                                     pytest=pytest, alpha_overide=alpha_v)
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
     if retraw:
@@ -472,11 +605,11 @@ def config_parser():
                         help='input data directory')
 
     # training options
-    parser.add_argument("--netdepth", type=int, default=4,
+    parser.add_argument("--netdepth", type=int, default=1,
                         help='layers in network')
     parser.add_argument("--netwidth", type=int, default=256,
                         help='channels per layer')
-    parser.add_argument("--netdepth_fine", type=int, default=4,
+    parser.add_argument("--netdepth_fine", type=int, default=1,
                         help='layers in fine network')
     parser.add_argument("--netwidth_fine", type=int, default=256,
                         help='channels per layer in fine network')
@@ -489,6 +622,10 @@ def config_parser():
     parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024 * 64,
+                        help='number of pts sent through network in parallel, decrease if running out of memory')
+    parser.add_argument("--chunk_render", type=int, default=1024 * 32,
+                        help='number of rays processed in parallel, decrease if running out of memory')
+    parser.add_argument("--netchunk_render", type=int, default=1024 * 64,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_batching", action='store_true',
                         help='only take random rays from 1 image at a time')
@@ -595,14 +732,14 @@ def config_parser():
     parser.add_argument(
         '--shape_params',
         type=int,
-        default=100,
+        default=40,
         help='the number of shape parameters'
     )
 
     parser.add_argument(
         '--expression_params',
         type=int,
-        default=50,
+        default=40,
         help='the number of expression parameters'
     )
 
@@ -674,6 +811,26 @@ def config_parser():
     return parser
 
 
+# FLAME zone
+def write_simple_obj(mesh_v, mesh_f, filepath, verbose=False):
+    with open(filepath, 'w') as fp:
+        for v in mesh_v:
+            fp.write('v %f %f %f\n' % (v[0], v[1], v[2]))
+        for f in mesh_f + 1:  # Faces are 1-based, not 0-based in obj files
+            fp.write('f %d %d %d\n' % (f[0], f[1], f[2]))
+    if verbose:
+        print('mesh saved to: ', filepath)
+
+
+# -----------------------------------------------------------------------------
+
+def safe_mkdir(file_dir):
+    if not os.path.exists(file_dir):
+        os.mkdir(file_dir)
+
+
+# FLAME zone
+
 def train():
     parser = config_parser()
     args = parser.parse_args()
@@ -716,6 +873,9 @@ def train():
         near = 2.
         far = 6.
 
+        # near = 3.
+        # far = 5.5
+
         if args.white_bkgd:
             images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
         else:
@@ -750,37 +910,6 @@ def train():
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
 
-    # FLAME zone
-
-    flamelayer = FLAME(args).to(device)
-    # shape = torch.zeros(1,args.shape_params).float().to(device)
-    # exp = torch.zeros(1,args.expression_params).float().to(device)
-    # pose = torch.zeros(1,args.pose_params).float().to(device)
-    # f_shape = torch.zeros(8, 100).cuda()
-    # f_exp = torch.zeros(8, 50, dtype=torch.float32).cuda()
-    # radian = np.pi / 180.0
-    # pose_params_numpy = np.array([[0.0, 30.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, -30.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, 85.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, -48.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, 10.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, -15.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, 0.0 * radian, 0.0, 0.0, 0.0, 0.0],
-    #                               [0.0, -0.0 * radian, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
-    # f_pose = torch.tensor(pose_params_numpy, dtype=torch.float32).cuda()
-    f_shape = torch.zeros(1, 100, dtype=torch.float32).cuda()
-    f_exp = torch.zeros(1, 50, dtype=torch.float32).cuda()
-    f_pose = torch.zeros(1, 6, dtype=torch.float32).cuda()
-    f_lr = 0.005
-    f_wd = 0.0001
-    f_opt = torch.optim.Adam(
-        [f_shape, f_exp, f_pose],
-        lr=f_lr,
-        weight_decay=f_wd
-    )
-    vertice, _ = flamelayer(f_shape, f_exp, f_pose)
-    # FLAME zone
-
     # Cast intrinsics to right types
     H, W, focal = hwf
     H, W = int(H), int(W)
@@ -810,6 +939,68 @@ def train():
         with open(f, 'w') as file:
             file.write(open(args.config, 'r').read())
 
+    # FLAME zone
+    w_shape_reg = 1e-4
+    w_shape_reg_trans = 1e-2
+    flamelayer = FLAME(args).to(device)
+    f_shape = nn.Parameter(torch.zeros(1, 40).float().to(device))
+    f_exp = nn.Parameter(torch.zeros(1, 40).float().to(device))
+    f_pose = nn.Parameter(torch.zeros(1, 6).float().to(device))
+    f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
+    f_lr = 0.005
+    f_wd = 0.0001
+    f_opt = torch.optim.Adam(
+        params=[f_shape, f_exp, f_pose, f_trans],
+        lr=f_lr,
+        weight_decay=f_wd
+    )
+
+    # checkpoints hack
+    basedir = args.basedir
+    expname = args.expname
+
+    ##########################
+
+    # Load checkpoints
+    if args.ft_path is not None and args.ft_path != 'None':
+        ckpts = [args.ft_path]
+    else:
+        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
+                 'tar' in f]
+
+    print('Found ckpts', ckpts)
+    if len(ckpts) > 0 and not args.no_reload:
+        ckpt_path = ckpts[-1]
+        print('Reloading from', ckpt_path)
+        ckpt = torch.load(ckpt_path)
+
+        f_opt.load_state_dict(ckpt['f_optimizer_state_dict'])
+        f_shape = ckpt['f_shape'].to(device)
+        f_exp = ckpt['f_exp'].to(device)
+        f_pose = ckpt['f_pose'].to(device)
+        f_trans = ckpt['f_trans'].to(device)
+    # checkpoints hack
+
+    vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+    vertice = torch.squeeze(vertice)
+    vertice = vertice.cuda()
+
+    vertice = vertice[:, [0, 2, 1]]
+    vertice[:, 1] = -vertice[:, 1]
+    vertice *= 8
+
+    faces = flamelayer.faces
+    faces = torch.tensor(faces.astype(np.int32))
+    faces = torch.squeeze(faces)
+    faces = faces.cuda()
+    # Write to an .obj file
+    # outmesh_dir = './output'
+    # safe_mkdir(outmesh_dir)
+    # outmesh_path = join(outmesh_dir, 'hello_flame.obj')
+    # write_simple_obj(mesh_v=vertice.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+
+    # FLAME zone
+
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
@@ -828,6 +1019,7 @@ def train():
     if args.render_only:
         print('RENDER ONLY')
         with torch.no_grad():
+
             if args.render_test:
                 # render_test switches to test poses
                 images = images[i_test]
@@ -838,9 +1030,19 @@ def train():
             testsavedir = os.path.join(basedir, expname,
                                        'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
             os.makedirs(testsavedir, exist_ok=True)
+
+            vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+            vertice_out = torch.squeeze(vertice_out)
+            # outmesh_dir = './output/t_face_4_8'
+            # safe_mkdir(outmesh_dir)
+            outmesh_path = os.path.join(testsavedir, 'face.obj')
+
+            write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+
             print('test poses shape', render_poses.shape)
 
-            rgbs, _ = render_path(vertice, render_poses, hwf, K, args.chunk, render_kwargs_test, gt_imgs=images,
+            rgbs, _ = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+                                  gt_imgs=images,
                                   savedir=testsavedir, render_factor=args.render_factor)
             print('Done rendering', testsavedir)
             imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
@@ -866,14 +1068,19 @@ def train():
         print('done')
         i_batch = 0
 
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = 'logs/tensorboard_logs/' + expname + '/' + current_time
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
     # Move training data to GPU
     if use_batching:
         images = torch.Tensor(images).to(device)
     poses = torch.Tensor(poses).to(device)
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
-
+    # was:
     N_iters = 200000 + 1
+    # N_iters = 20000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -937,11 +1144,33 @@ def train():
 
         # FLAME zone
         f_opt.zero_grad()
-        vertice, _ = flamelayer(f_shape, f_exp, f_pose)
+        vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
         vertice = torch.squeeze(vertice)
+
+        # max_x = torch.max(vertice[:, 0])
+        # max_y = torch.max(vertice[:, 1])
+        # max_z = torch.max(vertice[:, 2])
+        # min_x = torch.min(vertice[:, 0])
+        # min_y = torch.min(vertice[:, 1])
+        # min_z = torch.min(vertice[:, 2])
+        #
+        # print("Most extreme max point on x-axis:", vertice[vertice[:, 0] == max_x])
+        # print("Most extreme min point on x-axis:", vertice[vertice[:, 0] == min_x])
+        # print("Most extreme max point on y-axis:", vertice[vertice[:, 1] == max_y])
+        # print("Most extreme min point on y-axis:", vertice[vertice[:, 1] == min_y])
+        # print("Most extreme max point on z-axis:", vertice[vertice[:, 2] == max_z])
+        # print("Most extreme min point on z-axis:", vertice[vertice[:, 2] == min_z])
+
+        vertice = vertice[:, [0, 2, 1]]
+        vertice[:, 1] = -vertice[:, 1]
+        vertice *= 8
+
+        # v=vertice.cpu().detach().numpy()
+        # np.set_printoptions(threshold=sys.maxsize)
+
         # FLAME zone
 
-        rgb, disp, acc, extras = render(vertice, H, W, K, chunk=args.chunk, rays=batch_rays,
+        rgb, disp, acc, extras = render(vertice, faces, H, W, K, chunk=args.chunk, rays=batch_rays,
                                         verbose=i < 10, retraw=True,
                                         **render_kwargs_train)
 
@@ -956,6 +1185,11 @@ def train():
             loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
 
+        loss = loss + (torch.sum(f_shape ** 2) / 2) * 1e-4  # *1e-4
+        loss = loss + (torch.sum(f_exp ** 2) / 2) * 1e-4  # *1e-4
+        loss = loss + (torch.sum(f_pose ** 2) / 2) * 1e-4  # *1e-4
+        loss = loss + (torch.sum(f_trans ** 2) / 2) * 1e-4  # *1e-4
+        # print("loss: ",loss)
         loss.backward()
         # FLAME zone
         f_opt.step()
@@ -975,7 +1209,7 @@ def train():
         dt = time.time() - time0
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
-
+        torch.cuda.empty_cache()
         # Rest is logging
         if i % args.i_weights == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
@@ -984,78 +1218,115 @@ def train():
                 'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
                 'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'f_optimizer_state_dict': f_opt.state_dict(),
+                'f_shape': f_shape,
+                'f_exp': f_exp,
+                'f_pose': f_pose,
+                'f_trans': f_trans,
             }, path)
             print('Saved checkpoints at', path)
-
+        # torch.cuda.empty_cache()
+        # if i % args.i_video == 0 and i > 0:
+        #     # Turn on testing mode
+        #     with torch.no_grad():
+        #         rgbs, disps = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test)
+        #     print('Done, saving', rgbs.shape, disps.shape)
+        #     moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
+        #     imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
+        #     imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
+        #
+        #     # if args.use_viewdirs:
+        #     #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
+        #     #     with torch.no_grad():
+        #     #         rgbs_still, _ = render_path(vertice, faces,, render_poses, hwf, args.chunk_render, render_kwargs_test)
+        #     #     render_kwargs_test['c2w_staticcam'] = None
+        #     #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
+        torch.cuda.empty_cache()
         if i % args.i_video == 0 and i > 0:
-            # Turn on testing mode
             with torch.no_grad():
-                rgbs, disps = render_path(vertice, render_poses, hwf, K, args.chunk, render_kwargs_test)
-            print('Done, saving', rgbs.shape, disps.shape)
-            moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
-            imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-            imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
-            # if args.use_viewdirs:
-            #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
-            #     with torch.no_grad():
-            #         rgbs_still, _ = render_path(vertice, render_poses, hwf, args.chunk, render_kwargs_test)
-            #     render_kwargs_test['c2w_staticcam'] = None
-            #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
+                if args.render_test:
+                    # render_test switches to test poses
+                    images_r = images[i_test]
+                else:
+                    # Default is smoother render_poses path
+                    images_r = None
 
-        if i % args.i_testset == 0 and i > 0:
-            testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
-            os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', poses[i_test].shape)
-            with torch.no_grad():
-                render_path(vertice, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test,
-                            gt_imgs=images[i_test], savedir=testsavedir)
-            print('Saved test set')
+                testsavedir = os.path.join(basedir, expname,
+                                           'render_{}_{:06d}'.format('test' if args.render_test else 'path', i))
+                os.makedirs(testsavedir, exist_ok=True)
+
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+                # outmesh_dir = './output/t_face_4_8'
+                # safe_mkdir(outmesh_dir)
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+
+                write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+
+                print('test poses shape', render_poses.shape)
+
+                rgbs, _ = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+                                      gt_imgs=images_r,
+                                      savedir=testsavedir, render_factor=args.render_factor)
+                print('Done rendering', testsavedir)
+                imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+
+        # torch.cuda.empty_cache()
+        # if i % args.i_testset == 0 and i > 0:
+        #     testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
+        #     os.makedirs(testsavedir, exist_ok=True)
+        #     print('test poses shape', poses[i_test].shape)
+        #     with torch.no_grad():
+        #         render_path(vertice, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+        #                     render_kwargs_test,
+        #                     gt_imgs=images[i_test], savedir=testsavedir)
+        #     print('Saved test set')
+        torch.cuda.empty_cache()
+        with train_summary_writer.as_default():
+            tf.summary.scalar('loss', data=loss.item(), step=global_step)
+            tf.summary.scalar('psnr', data=psnr.item(), step=global_step)
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
-        """
-            print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
-            print('iter time {:.05f}'.format(dt))
+        #     print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
+        #     print('iter time {:.05f}'.format(dt))
+        #
+        # with tf.compat.v2.summary.record_summaries_every_n_global_steps(args.i_print):
+        #     tf.compat.v2.summary.scalar(name='loss', data=loss, step=tf.compat.v1.train.get_or_create_global_step())
+        #     tf.compat.v2.summary.scalar(name='psnr', data=psnr, step=tf.compat.v1.train.get_or_create_global_step())
+        #     tf.compat.v2.summary.histogram(name='tran', data=trans, step=tf.compat.v1.train.get_or_create_global_step())
+        #     if args.N_importance > 0:
+        #         tf.compat.v2.summary.scalar(name='psnr0', data=psnr0, step=tf.compat.v1.train.get_or_create_global_step())
+        #
+        # if i % args.i_img == 0:
+        #
+        #     # Log a rendered validation view to Tensorboard
+        #     img_i = np.random.choice(i_val)
+        #     target = images[img_i]
+        #     pose = poses[img_i, :3, :4]
+        #     with torch.no_grad():
+        #         rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose,
+        #                                         **render_kwargs_test)
+        #
+        #     psnr = mse2psnr(img2mse(rgb, target))
+        #
+        #     with tf.compat.v2.summary.record_summaries_every_n_global_steps(args.i_img):
+        #
+        #         tf.compat.v2.summary.image(name='rgb', data=to8b(rgb)[tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #         tf.compat.v2.summary.image(name='disp', data=disp[tf.newaxis, ..., tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #         tf.compat.v2.summary.image(name='acc', data=acc[tf.newaxis, ..., tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #
+        #         tf.compat.v2.summary.scalar(name='psnr_holdout', data=psnr, step=tf.compat.v1.train.get_or_create_global_step())
+        #         tf.compat.v2.summary.image(name='rgb_holdout', data=target[tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #
+        #     if args.N_importance > 0:
+        #         with tf.compat.v2.summary.record_summaries_every_n_global_steps(args.i_img):
+        #             tf.compat.v2.summary.image(name='rgb0', data=to8b(extras['rgb0'])[tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #             tf.compat.v2.summary.image(name='disp0', data=extras['disp0'][tf.newaxis, ..., tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
+        #             tf.compat.v2.summary.image(name='z_std', data=extras['z_std'][tf.newaxis, ..., tf.newaxis], step=tf.compat.v1.train.get_or_create_global_step())
 
-            with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_print):
-                tf.contrib.summary.scalar('loss', loss)
-                tf.contrib.summary.scalar('psnr', psnr)
-                tf.contrib.summary.histogram('tran', trans)
-                if args.N_importance > 0:
-                    tf.contrib.summary.scalar('psnr0', psnr0)
-
-
-            if i%args.i_img==0:
-
-                # Log a rendered validation view to Tensorboard
-                img_i=np.random.choice(i_val)
-                target = images[img_i]
-                pose = poses[img_i, :3,:4]
-                with torch.no_grad():
-                    rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose,
-                                                        **render_kwargs_test)
-
-                psnr = mse2psnr(img2mse(rgb, target))
-
-                with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
-
-                    tf.contrib.summary.image('rgb', to8b(rgb)[tf.newaxis])
-                    tf.contrib.summary.image('disp', disp[tf.newaxis,...,tf.newaxis])
-                    tf.contrib.summary.image('acc', acc[tf.newaxis,...,tf.newaxis])
-
-                    tf.contrib.summary.scalar('psnr_holdout', psnr)
-                    tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
-
-
-                if args.N_importance > 0:
-
-                    with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
-                        tf.contrib.summary.image('rgb0', to8b(extras['rgb0'])[tf.newaxis])
-                        tf.contrib.summary.image('disp0', extras['disp0'][tf.newaxis,...,tf.newaxis])
-                        tf.contrib.summary.image('z_std', extras['z_std'][tf.newaxis,...,tf.newaxis])
-        """
-
+        torch.cuda.empty_cache()
         global_step += 1
 
 

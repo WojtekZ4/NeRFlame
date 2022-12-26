@@ -1,0 +1,27 @@
+expname = face_textured_4_1_local
+basedir = ./logs
+datadir = ./data/face_scan/textured_face_4
+dataset_type = blender
+
+no_batching = False
+white_bkgd = True
+half_res = True
+
+factor = 8
+llffhold = 8
+
+N_rand = 1024
+N_samples = 100
+N_importance = 0
+
+use_viewdirs = False
+raw_noise_std = 1e0
+
+render_only=False
+
+chunk=1024
+netchunk=1024
+
+i_weights=1000
+i_testset=500000
+i_video=500000
