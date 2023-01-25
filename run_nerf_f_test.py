@@ -439,7 +439,7 @@ def FLAME_based_alpha_calculator_f_solid(min_d, m, e):
 #     return alpha
 
 
-def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points, mesh_faces):
+def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points, mesh_faces, m, e):
     # print('mesh_points',mesh_points)
     # print('mesh_faces', mesh_faces)
     mesh_points = [mesh_points]
@@ -459,102 +459,75 @@ def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points,
 
     return dists, idxs
 
+
 def distance_from_triangle(point, triangle):
     # Define vectors for triangle edges
-    v0 = triangle[..., 2,:] - triangle[..., 0,:]
-    v1 = triangle[..., 1,:] - triangle[..., 0,:]
-    v2 = point - triangle[..., 0,:]
+    v0 = triangle[2] - triangle[0]
+    v1 = triangle[1] - triangle[0]
+    v2 = point - triangle[0]
 
     # Find normal of the triangle plane
     plane_normal = torch.cross(v0, v1)
-    plane_normal = plane_normal / torch.norm(plane_normal, dim=-1, keepdim=True)
+    plane_normal =plane_normal / torch.norm(plane_normal)
     # Find distance from point to plane using the formula:
     # d = |(P-A).N| / |N|
-    d = torch.abs(torch.sum(v2 * plane_normal, dim=-1))
+    d = torch.abs(torch.dot(v2, plane_normal) )
 
     # Find the closest point on the plane to the given point
-    closest_point = point - torch.abs(plane_normal * d.unsqueeze(-1))
-    distance_2d = distance_from_triangle_2d(closest_point, triangle)
-    return torch.sqrt(torch.pow(d, 2) + torch.pow(distance_2d, 2))
-    # return d
+    closest_point = point - torch.abs(plane_normal * d)
+    distance_2d=distance_from_triangle_2d(closest_point,triangle)
+    return torch.sqrt(torch.pow(d,2)+torch.pow(distance_2d,2))
+
 
 def distance_from_triangle_2d(point, triangle):
     # Calculate vectors for edges of triangle
-    v0 = triangle[..., 1,:] - triangle[..., 0,:]
-    v1 = triangle[..., 2,:] - triangle[..., 0,:]
-    v2 = point - triangle[..., 0,:]
-    d00 = torch.sum(v0 * v0, dim=-1)
-    d01 = torch.sum(v0 * v1, dim=-1)
-    d11 = torch.sum(v1 * v1, dim=-1)
-    d20 = torch.sum(v2 * v0, dim=-1)
-    d21 = torch.sum(v2 * v1, dim=-1)
+    v0 = triangle[1] - triangle[0]
+    v1 = triangle[2] - triangle[0]
+    v2 = point - triangle[0]
+    d00 = torch.dot(v0, v0)
+    d01 = torch.dot(v0, v1)
+    d11 = torch.dot(v1, v1)
+    d20 = torch.dot(v2, v0)
+    d21 = torch.dot(v2, v1)
     denom = d00 * d11 - d01 * d01
     v = (d11 * d20 - d01 * d21) / denom
     w = (d00 * d21 - d01 * d20) / denom
     u = 1 - v - w
-    inside_triangle = (u >= 0) & (v >= 0) & (w >= 0)
-
-    # Point is outside the triangle
-    # Find closest point on each edge and return distance to closest one
-    d1 = distance_point_to_line_segment(point, triangle[..., 0,:], triangle[..., 1,:])
-    d2 = distance_point_to_line_segment(point, triangle[..., 0,:], triangle[..., 2,:])
-    d3 = distance_point_to_line_segment(point, triangle[..., 1,:], triangle[..., 2,:])
-    return torch.where(inside_triangle, torch.tensor([0], dtype=torch.float),torch.minimum(torch.minimum(d1,d2),d3))
+    if u < 0 or v < 0 or w  < 0:
+        # Point is outside the triangle
+        # Find closest point on each edge and return distance to closest one
+        d1 = distance_point_to_line_segment(point,triangle[0],triangle[1])
+        d2 = distance_point_to_line_segment(point,triangle[0],triangle[2])
+        d3 = distance_point_to_line_segment(point,triangle[1],triangle[2])
+        return min(d1, d2, d3)
+    else:
+        # Point is inside the triangle
+        # Calculate distance to closest point on triangle
+        return torch.tensor(0)
 
 def distance_point_to_line_segment(point, line_point1, line_point2):
     # Create the line vector
     line_vec = line_point2 - line_point1
     # Normalize the line vector
-    line_vec = line_vec / torch.norm(line_vec, dim=-1, keepdim=True)
+    line_vec = line_vec / torch.norm(line_vec)
     # Create a vector from point to line_point1
     point_vec = point - line_point1
     # Get the scalar projection of point_vec onto line_vec
-    scalar_projection = torch.sum(point_vec * line_vec, dim=-1)
+    scalar_projection = torch.dot(point_vec, line_vec)
     # Multiply line_vec by the scalar projection to get the projection vector
-    projection_vec = scalar_projection.unsqueeze(-1) * line_vec
+    projection_vec = scalar_projection * line_vec
     # Add the projection vector to line_point1 to get the projected point
     projected_point = line_point1 + projection_vec
     # Check if the projection is inside or outside the line segment
-    inside_segment = (scalar_projection >= 0) & (scalar_projection <= torch.norm(line_point2 - line_point1, dim=-1))
-
-    return torch.where(inside_segment, torch.norm(point - projected_point, dim=-1), torch.min(torch.norm(point - line_point1, dim=-1), torch.norm(point - line_point2, dim=-1)))
-
-# def distance_from_triangle_2d(points, triangles):
-#     # Calculate vectors for edges of triangle
-#     v0 = triangles[:,:,1] - triangles[:,:,0]
-#     v1 = triangles[:,:,2] - triangles[:,:,0]
-#     v2 = points - triangles[:,:,0]
-#     d00 = torch.sum(v0*v0,dim=-1)
-#     d01 = torch.sum(v0*v1,dim=-1)
-#     d11 = torch.sum(v1*v1,dim=-1)
-#     d20 = torch.sum(v2*v0,dim=-1)
-#     d21 = torch.sum(v2*v1,dim=-1)
-#     denom = d00 * d11 - d01 * d01
-#     v = (d11 * d20 - d01 * d21) / denom
-#     w = (d00 * d21 - d01 * d20) / denom
-#     u = 1 - v - w
-#     inside_triangle = (u >= 0) & (v >= 0) & (w >= 0)
-#     inside_triangle = inside_triangle.unsqueeze(-1)
-#     closest_point = v.unsqueeze(-1)*v0 + w.unsqueeze(-1)*v1 + triangles[:,:,0]
-#     return torch.where(inside_triangle,torch.tensor(0.0),distance_point_to_line_segment(points,closest_point,triangles))
-#
-# def distance_point_to_line_segment(points, closest_points,triangles):
-#     # Create the line vector
-#     line_vec = triangles[:,:,1]-triangles[:,:,0]
-#     # Normalize the line vector
-#     line_vec = line_vec / torch.norm(line_vec,dim=-1,keepdim=True)
-#     # Create a vector from point to line_point1
-#     point_vec = points - triangles[:,:,0]
-#     # Get the scalar projection of point_vec onto line_vec
-#     scalar_projection = torch.sum(point_vec*line_vec,dim=-1)
-#     # Multiply line_vec by the scalar projection to get the projection vector
-#     projection_vec = scalar_projection.unsqueeze(-1)*line_vec
-#     # Add the projection vector to line_point1 to get the projected point
-#     projected_point = triangles[:,:,0] + projection_vec
-#     # Check if the projection is inside or outside the line segment
-#     inside_segment = (scalar_projection >= 0) & (scalar_projection <= torch.norm(triangles[:,:,1]-triangles[:,:,0],dim=-1))
-#     inside_segment = inside_segment.unsqueeze(-1)
-#     return torch.where(inside_segment,torch.norm(points-projected_point,dim=-1),torch.min(torch.norm(points-triangles[:,:,0],dim=-1),torch.norm(points-triangles[:,:,1],dim=-1)))
+    if scalar_projection < 0:
+        # The projection is outside the line segment, so return the distance to line_point1
+        return torch.norm(point - line_point1)
+    elif scalar_projection > torch.norm(line_point2 - line_point1):
+        # The projection is outside the line segment, so return the distance to line_point2
+        return torch.norm(point - line_point2)
+    else:
+        # The projection is inside the line segment, so return the distance to the projected point
+        return torch.norm(point - projected_point)
 
 def FLAME_based_alpha_calculator_4_face_version(set_of_coordinates, mesh_points, mesh_faces ):
     f_distances = torch.empty(set_of_coordinates.shape[0], set_of_coordinates.shape[1], mesh_faces.shape[0])
@@ -568,30 +541,19 @@ def FLAME_based_alpha_calculator_4_face_version(set_of_coordinates, mesh_points,
                 f_distances[i][j][k] = distance_from_triangle(point, triangle)
     return f_distances
 
-# def FLAME_based_alpha_calculator_5_face_version(set_of_coordinates, mesh_points, mesh_faces ,v_distances):
-#     f_distances = torch.empty(set_of_coordinates.shape[0], set_of_coordinates.shape[1])
-#     top_i = torch.topk(v_distances, k=3, dim=2).indices
-#
-#     for i, points in enumerate(set_of_coordinates):
-#         # Iterate through all the faces in the mesh
-#         for j, point in enumerate(points):
-#             triangle = mesh_points[top_i[i][j]]
-#             # Apply the distance function to the point and triangle
-#             f_distances[i][j] = distance_from_triangle(point, triangle)
-#     return f_distances
-
-
 def FLAME_based_alpha_calculator_5_face_version(set_of_coordinates, mesh_points, mesh_faces ,v_distances):
-    # Get the top 3 closest mesh points for each point in set_of_coordinates
-    top_i = torch.topk(v_distances, k=3, dim=2, largest=False).indices
+    f_distances = torch.empty(set_of_coordinates.shape[0], set_of_coordinates.shape[1])
+    top_i = torch.topk(v_distances, k=3, dim=2).index()
 
-    # Get the coordinates of the top 3 closest mesh points for each point in set_of_coordinates
-    triangle = mesh_points[top_i]
-
-    # Calculate the distance from each point in set_of_coordinates to the corresponding triangle
-    f_distances = distance_from_triangle(set_of_coordinates, triangle)
+    for i, points in enumerate(set_of_coordinates):
+        # Iterate through all the faces in the mesh
+        for j, point in enumerate(points):
+            triangle = mesh_points[top_i[i][j]]
+            # Apply the distance function to the point and triangle
+            f_distances[i][j] = distance_from_triangle(point, triangle)
 
     return f_distances
+
 def render_rays(f_vert,
                 f_faces,
                 ray_batch,
@@ -680,8 +642,7 @@ def render_rays(f_vert,
         # alpha = FLAME_based_alpha_calculator_v_gauss(distances_v, m, epsilon_v)
         # alpha = FLAME_based_alpha_calculator_v_solid(distances_v, m, epsilon_v)
     else:
-        # distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts.detach(), f_vert.detach(), f_faces.detach())
-        distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces,distances_v)
+        distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert.detach(), f_faces, m, epsilon_f)
         alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
         # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
         # alpha = FLAME_based_alpha_calculator_f_solid(distances_f, m, epsilon_f)
@@ -718,8 +679,7 @@ def render_rays(f_vert,
             # alpha = FLAME_based_alpha_calculator_v_gauss(distances_v, m, epsilon_v)
             # alpha = FLAME_based_alpha_calculator_v_solid(distances_v, m, epsilon_v)
         else:
-            # distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces, m, epsilon_f)
-            distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces, distances_v)
+            distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces, m, epsilon_f)
             alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
             # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
             # alpha = FLAME_based_alpha_calculator_f_solid(distances_f, m, epsilon_f)
@@ -1308,7 +1268,7 @@ def train():
         f_opt.zero_grad()
         vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
         vertice = torch.squeeze(vertice)
-        optimizer.zero_grad()
+
         # max_x = torch.max(vertice[:, 0])
         # max_y = torch.max(vertice[:, 1])
         # max_z = torch.max(vertice[:, 2])
@@ -1337,7 +1297,7 @@ def train():
         #                                         verbose=i < 10, retraw=True,
         #                                         **render_kwargs_train)
         #
-        #
+        # optimizer.zero_grad()
         # img_loss_v = img2mse(rgb_v, target_s)
         # trans_v = extras_v['raw'][..., -1]
         # loss_v = img_loss_v
@@ -1376,14 +1336,12 @@ def train():
 
         # loss = alpha1 * loss_v + (1. - alpha1) * loss_f
         # psnr = alpha1 * psnr_v + (1. - alpha1) * psnr_f
-
         loss=loss_f
         psnr=psnr_f
-
-        # if i<alpha1_grad:
-        #     alpha1 = 1 - (i / alpha1_grad)
-        # else:
-        #     alpha1 = 0
+        if i<alpha1_grad:
+            alpha1 = 1 - (i / alpha1_grad)
+        else:
+            alpha1 = 0
 
         # loss = loss_f
         # psnr = psnr_f
