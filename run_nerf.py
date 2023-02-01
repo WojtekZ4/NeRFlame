@@ -671,8 +671,8 @@ def render_rays(f_vert,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     m = torch.nn.ReLU()
-    epsilon_v = torch.tensor(0.08)
-    epsilon_f = torch.tensor(0.08)
+    epsilon_v = torch.tensor(0.06)
+    epsilon_f = torch.tensor(0.06)
 
     distances_v = distance_calculator(pts, f_vert)
     if use_vert:
