@@ -278,7 +278,7 @@ def create_nerf(args):
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False, alpha_overide=None):
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False, alpha_overide=None, fake_alpha=None):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -324,11 +324,16 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         # dists_c[..., -1]=torch.mean(dists[..., :-1],dim=1)
         # alpha = torch.clamp((alpha_overide + noise) * (dists_c / torch.mean(dists[..., :-1],dim=1)[...,None]) , min=0.0, max=1.0) # [N_rays, N_samples]
         alpha = alpha_overide
+
+    if fake_alpha is None:
+        fake_alpha = alpha
     # np.savetxt('alpha_d.txt', alpha.cpu().detach().numpy())
     # np.savetxt('alpha_overide_d.txt', alpha_overide.cpu().detach().numpy())
 
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+    fake_weights = fake_alpha * torch.cumprod(torch.cat([torch.ones((fake_alpha.shape[0], 1)), 1. - fake_alpha + 1e-10], -1),
+                                        -1)[:, :-1]
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
@@ -338,7 +343,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     if white_bkgd:
         rgb_map = rgb_map + (1. - acc_map[..., None])
 
-    return rgb_map, disp_map, acc_map, weights, depth_map
+    return rgb_map, disp_map, acc_map, weights, fake_weights, depth_map
 
 
 # def singular_distance_calculator(coordinates, mesh_points):
@@ -681,9 +686,9 @@ def render_rays(f_vert,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     m = torch.nn.ReLU()
-    epsilon_v = torch.tensor(0.01)
-    epsilon_f = torch.tensor(0.01)
-
+    epsilon_v = torch.tensor(0.03)
+    epsilon_f = torch.tensor(0.03)
+    fake_epsilon_f = torch.tensor(0.03)
     # distances_v = distance_calculator(pts, f_vert)
     if use_vert:
         pass
@@ -694,6 +699,7 @@ def render_rays(f_vert,
         distances_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
         # distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces,distances_v)
         alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
+        fake_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, fake_epsilon_f)
         # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
         # alpha = FLAME_based_alpha_calculator_f_solid(distances_f, m, epsilon_f)
 
@@ -709,14 +715,14 @@ def render_rays(f_vert,
     # print('viewdirs_s', viewdirs.size())
     #     raw = run_network(pts)
     raw = network_query_fn(pts, viewdirs, network_fn)
-    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                 pytest=pytest, alpha_overide=alpha)
+    rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+                                                                 pytest=pytest, alpha_overide=alpha,fake_alpha=fake_alpha)
 
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-        z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
+        z_samples = sample_pdf(z_vals_mid, fake_weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
@@ -743,7 +749,7 @@ def render_rays(f_vert,
         #         raw = run_network(pts, fn=run_fn)
         raw = network_query_fn(pts, viewdirs, run_fn)
 
-        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+        rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest, alpha_overide=alpha)
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
