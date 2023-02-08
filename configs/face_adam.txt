@@ -1,0 +1,36 @@
+expname = face_adam_1_1_e003
+basedir = ./logs
+datadir = ./data/face_scan/face_adam_1_voronoi
+dataset_type = blender
+
+no_batching = True
+white_bkgd = True
+half_res = True
+
+factor = 8
+llffhold = 8
+
+N_rand = 1024
+N_samples = 200
+N_importance = 0
+
+perturb=1
+netdepth=8
+netdepth_fine=8
+netwidth=256
+netwidth_fine=256
+
+use_viewdirs = False
+raw_noise_std = 0.001
+
+render_only=False
+render_factor=0
+
+chunk=8192
+netchunk=8192
+chunk_render=1024
+
+i_embed=0
+
+i_video=20000
+i_testset=10000

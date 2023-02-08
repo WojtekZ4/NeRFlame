@@ -1,0 +1,36 @@
+expname = face_2_garry_3_36_face_e004_N_importance_test
+basedir = ./logs
+datadir = ./data/face_scan/face_garry_3_no_black_big_angle
+dataset_type = blender
+
+no_batching = True
+white_bkgd = True
+half_res = True
+
+factor = 8
+llffhold = 8
+
+N_rand = 512
+N_samples = 100
+N_importance = 100
+
+perturb=1
+netdepth=8
+netdepth_fine=8
+netwidth=256
+netwidth_fine=256
+
+use_viewdirs = False
+raw_noise_std = 0.001
+
+render_only=False
+render_factor=0
+
+chunk=8192
+netchunk=8192
+chunk_render=1024
+
+i_embed=0
+
+i_video=20000
+i_testset=10000
