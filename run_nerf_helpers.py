@@ -47,10 +47,12 @@ class Embedder:
 
 def get_embedder(multires, i=0):
     if i == -1:
+        # return nn.Identity(), 3
         return nn.Identity(), 5023
-    
+
     embed_kwargs = {
                 'include_input' : True,
+                # 'input_dims': 3,
                 'input_dims' : 5023,
                 'max_freq_log2' : multires-1,
                 'num_freqs' : multires,
