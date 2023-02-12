@@ -7,6 +7,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd.function import once_differentiable
 from tqdm import tqdm, trange
 
 import matplotlib.pyplot as plt
@@ -23,8 +24,9 @@ sys.path.append('./FLAME/')
 from FLAME import FLAME
 from os.path import join
 from pytorch3d import _C
-from pytorch3d.loss.point_mesh_distance import _PointFaceDistance
+# from pytorch3d.loss.point_mesh_distance import _PointFaceDistance
 from pytorch3d.structures import Meshes, Pointclouds
+from torch.autograd import Function
 
 import tensorflow as tf
 from torch.distributions import Normal
@@ -262,7 +264,9 @@ def create_nerf(args):
         'use_viewdirs': args.use_viewdirs,
         'white_bkgd': args.white_bkgd,
         'raw_noise_std': args.raw_noise_std,
-        'use_vert': True
+        'use_vert': False,
+        'epsilon': args.epsilon,
+        'fake_epsilon': args.fake_epsilon,
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -360,10 +364,77 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 # PointFaceDistance
 
 
+# PointFaceDistance
+
+_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-3
+class _PointFaceDistance(Function):
+    """
+    Torch autograd Function wrapper PointFaceDistance Cuda implementation
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        points,
+        points_first_idx,
+        tris,
+        tris_first_idx,
+        max_points,
+        min_triangle_area=_DEFAULT_MIN_TRIANGLE_AREA,
+    ):
+        """
+        Args:
+            ctx: Context object used to calculate gradients.
+            points: FloatTensor of shape `(P, 3)`
+            points_first_idx: LongTensor of shape `(N,)` indicating the first point
+                index in each example in the batch
+            tris: FloatTensor of shape `(T, 3, 3)` of triangular faces. The `t`-th
+                triangular face is spanned by `(tris[t, 0], tris[t, 1], tris[t, 2])`
+            tris_first_idx: LongTensor of shape `(N,)` indicating the first face
+                index in each example in the batch
+            max_points: Scalar equal to maximum number of points in the batch
+            min_triangle_area: (float, defaulted) Triangles of area less than this
+                will be treated as points/lines.
+        Returns:
+            dists: FloatTensor of shape `(P,)`, where `dists[p]` is the squared
+                euclidean distance of `p`-th point to the closest triangular face
+                in the corresponding example in the batch
+            idxs: LongTensor of shape `(P,)` indicating the closest triangular face
+                in the corresponding example in the batch.
+
+            `dists[p]` is
+            `d(points[p], tris[idxs[p], 0], tris[idxs[p], 1], tris[idxs[p], 2])`
+            where `d(u, v0, v1, v2)` is the distance of point `u` from the triangular
+            face `(v0, v1, v2)`
+
+        """
+        dists, idxs = _C.point_face_dist_forward(
+            points,
+            points_first_idx,
+            tris,
+            tris_first_idx,
+            max_points,
+            min_triangle_area,
+        )
+        ctx.save_for_backward(points, tris, idxs)
+        ctx.min_triangle_area = min_triangle_area
+        return dists, idxs
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_dists, grad_idxs):
+        grad_dists = grad_dists.contiguous()
+        points, tris, idxs = ctx.saved_tensors
+        min_triangle_area = ctx.min_triangle_area
+        grad_points, grad_tris = _C.point_face_dist_backward(
+            points, tris, idxs, grad_dists, min_triangle_area
+        )
+        return grad_points, None, grad_tris, None, None, None
+
 point_face_distance = _PointFaceDistance.apply
 
 
-_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-3
+
 
 
 # Stolen from pytorch3d
@@ -389,13 +460,13 @@ def point_mesh_face_distance(
     max_tris = meshes.num_faces_per_mesh().max().item()
 
     # point to face distance: shape (P,)
-    point_to_face = point_face_distance(
+    point_to_face, idx = point_face_distance(
         points, points_first_idx, tris, tris_first_idx, max_points, min_triangle_area
     )
     # dists, idxs = _C.point_face_dist_forward(
     #     points, points_first_idx, tris, tris_first_idx, max_points, min_triangle_area
     # )
-    return point_to_face
+    return point_to_face, idx
 
 
 def distance_calculator(set_of_coordinates, mesh_points):
@@ -468,11 +539,13 @@ def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points,
     # dists = torch.sqrt(dists)
     # dists, idxs = torch.reshape(dists, (set_of_coordinates_size[0], set_of_coordinates_size[1])), \
     #               torch.reshape(idxs, (set_of_coordinates_size[0], set_of_coordinates_size[1]))
-    dists = point_mesh_face_distance(p_mesh, p_points)
+    dists, idxs = point_mesh_face_distance(p_mesh, p_points)
     dists = torch.sqrt(dists)
-    dists = torch.reshape(dists, (set_of_coordinates_size[0], set_of_coordinates_size[1]))
+    dists, idxs = torch.reshape(dists, (set_of_coordinates_size[0], set_of_coordinates_size[1])), \
+                  torch.reshape(idxs, (set_of_coordinates_size[0], set_of_coordinates_size[1]))
+    # dists = torch.reshape(dists, (set_of_coordinates_size[0], set_of_coordinates_size[1]))
 
-    return dists
+    return dists, idxs
 
 def distance_from_triangle(point, triangle):
     # Define vectors for triangle edges
@@ -607,6 +680,12 @@ def FLAME_based_alpha_calculator_5_face_version(set_of_coordinates, mesh_points,
     f_distances = distance_from_triangle(set_of_coordinates, triangle)
 
     return f_distances
+
+def transform_pt(point, trans_mat):
+    a  = np.array([point[0], point[1], point[2], 1])
+    ap = np.dot(a, trans_mat)[:3]
+    return [ap[0], ap[1], ap[2]]
+
 def render_rays(f_vert,
                 f_faces,
                 ray_batch,
@@ -622,7 +701,10 @@ def render_rays(f_vert,
                 raw_noise_std=0.,
                 verbose=False,
                 pytest=False,
-                use_vert=True):
+                use_vert=False,
+                epsilon=0.04,
+                fake_epsilon=0.06,
+                trans_mat=None):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -686,9 +768,9 @@ def render_rays(f_vert,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     m = torch.nn.ReLU()
-    epsilon_v = torch.tensor(0.03)
-    epsilon_f = torch.tensor(0.03)
-    fake_epsilon_f = torch.tensor(0.03)
+    epsilon_v = torch.tensor(0.025)
+    epsilon_f = torch.tensor(0.025)
+    fake_epsilon_f = torch.tensor(0.05)
     # distances_v = distance_calculator(pts, f_vert)
     if use_vert:
         pass
@@ -696,7 +778,7 @@ def render_rays(f_vert,
         # alpha = FLAME_based_alpha_calculator_v_gauss(distances_v, m, epsilon_v)
         # alpha = FLAME_based_alpha_calculator_v_solid(distances_v, m, epsilon_v)
     else:
-        distances_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
+        distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
         # distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces,distances_v)
         alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
         fake_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, fake_epsilon_f)
@@ -713,6 +795,11 @@ def render_rays(f_vert,
     # print('pts_s', pts.size())
     # print('viewdirs', viewdirs)
     # print('viewdirs_s', viewdirs.size())
+
+    if trans_mat is not None:
+        trans_mat_organ = trans_mat[idx_f, :]
+        pts = transform_pt(pts, trans_mat_organ)
+
     #     raw = run_network(pts)
     raw = network_query_fn(pts, viewdirs, network_fn)
     rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
@@ -736,7 +823,7 @@ def render_rays(f_vert,
             # alpha = FLAME_based_alpha_calculator_v_gauss(distances_v, m, epsilon_v)
             # alpha = FLAME_based_alpha_calculator_v_solid(distances_v, m, epsilon_v)
         else:
-            distances_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
+            distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
             # distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces, distances_v)
             alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
             # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
@@ -746,6 +833,11 @@ def render_rays(f_vert,
         # alpha = FLAME_based_alpha_calculator_2(pts, f_vert, m, e)
 
         run_fn = network_fn if network_fine is None else network_fine
+
+        if trans_mat is not None:
+            trans_mat_organ = trans_mat[idx_f, :]
+            pts = transform_pt(pts, trans_mat_organ)
+
         #         raw = run_network(pts, fn=run_fn)
         raw = network_query_fn(pts, viewdirs, run_fn)
 
@@ -881,6 +973,9 @@ def config_parser():
     parser.add_argument("--i_video", type=int, default=50000,
                         help='frequency of render_poses video saving')
 
+    parser.add_argument("--epsilon", type=float, default=0.04)
+    parser.add_argument("--fake_epsilon", type=float, default=0.06)
+
     # FLAME zone
     parser.add_argument(
         '--flame_model_path',
@@ -908,14 +1003,14 @@ def config_parser():
     parser.add_argument(
         '--shape_params',
         type=int,
-        default=40,
+        default=150,
         help='the number of shape parameters'
     )
 
     parser.add_argument(
         '--expression_params',
         type=int,
-        default=40,
+        default=100,
         help='the number of expression parameters'
     )
 
@@ -1004,7 +1099,33 @@ def safe_mkdir(file_dir):
     if not os.path.exists(file_dir):
         os.mkdir(file_dir)
 
+def recover_homogenous_affine_transformation(p, p_prime):
+    batch_size = p.shape[0]
 
+    p_ext = torch.cat((p, torch.ones((batch_size, 3, 1))), dim=-1)
+    p_prime_ext = torch.cat((p_prime, torch.ones((batch_size, 3, 1))), dim=-1)
+
+    # construct intermediate matrix
+    Q       = p[:, 1:, :]       - p[:, 0:1, :]
+    Q_prime = p_prime[:, 1:, :] - p_prime[:, 0:1, :]
+
+    # calculate rotation matrix
+    R = torch.inverse(torch.cat((Q, torch.cross(Q[:, 0, :], Q[:, 1, :], dim=1).unsqueeze(1)), dim=1)) @ \
+        torch.cat((Q_prime, torch.cross(Q_prime[:, 0, :], Q_prime[:, 1, :], dim=1).unsqueeze(1)), dim=1)
+
+    # calculate translation vector
+    t = p_prime[:, 0, :] - torch.einsum("ik,ikj->ij", p[:, 0, :], R)
+
+    # calculate affine transformation matrix
+    a=torch.cat((R, t[:,None,:]), dim=1 )
+    b=torch.tensor([0,0,0,1])[None, :,None].expand(a.shape[0],-1,-1)
+    return torch.cat((a, b), dim=2)
+
+def transform_pt(point, trans_mat):
+    a = torch.cat((point, torch.ones(point.shape[0],point.shape[1],1)), dim=-1)
+    # ap = (a @ trans_mat)[..., :3]torch.einsum("ijk,ik->ij", trans_mat, a)
+    ap = torch.einsum("tik,tikj->tij", a,trans_mat)[..., :3]
+    return ap.squeeze(0)
 # FLAME zone
 
 def train():
@@ -1119,11 +1240,11 @@ def train():
     w_shape_reg = 1e-4
     w_shape_reg_trans = 1e-2
     flamelayer = FLAME(args).to(device)
-    f_shape = nn.Parameter(torch.zeros(1, 40).float().to(device))
-    f_exp = nn.Parameter(torch.zeros(1, 40).float().to(device))
+    f_shape = nn.Parameter(torch.zeros(1, 150).float().to(device))
+    f_exp = nn.Parameter(torch.zeros(1, 100).float().to(device))
     f_pose = nn.Parameter(torch.zeros(1, 6).float().to(device))
     f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
-    f_lr = 0.0005
+    f_lr = 0.005
     f_wd = 0.0001
     f_opt = torch.optim.Adam(
         params=[f_shape, f_exp, f_pose, f_trans],
@@ -1155,6 +1276,8 @@ def train():
         f_exp = ckpt['f_exp'].to(device)
         f_pose = ckpt['f_pose'].to(device)
         f_trans = ckpt['f_trans'].to(device)
+        args.epsilon = ckpt['epsilon']
+        args.fake_epsilon = ckpt['fake_epsilon']
     # checkpoints hack
 
     vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
@@ -1257,6 +1380,12 @@ def train():
 
     alpha1 = 1.
     alpha1_grad = 50000
+
+    # max_eps=0.4
+    # min_eps=0.1
+    #
+    # render_kwargs_test['epsilon']=max_eps
+    # render_kwargs_train['epsilon']=max_eps
 
     # N_iters = 100000 + 1
     N_iters = 200000 + 1
@@ -1402,6 +1531,9 @@ def train():
         #     alpha1 = 1 - (i / alpha1_grad)
         # else:
         #     alpha1 = 0
+        #
+        # render_kwargs_test['epsilon']=min_eps+alpha1*(max_eps-min_eps)
+        # render_kwargs_train['epsilon']=min_eps+alpha1*(max_eps-min_eps)
 
         # loss = loss_f
         # psnr = psnr_f
@@ -1440,6 +1572,8 @@ def train():
                     'f_exp': f_exp,
                     'f_pose': f_pose,
                     'f_trans': f_trans,
+                    'epsilon': render_kwargs_test['epsilon'],
+                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
                 }, path)
             else:
                 torch.save({
@@ -1452,6 +1586,8 @@ def train():
                     'f_exp': f_exp,
                     'f_pose': f_pose,
                     'f_trans': f_trans,
+                    'epsilon': render_kwargs_test['epsilon'],
+                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
                 }, path)
             print('Saved checkpoints at', path)
 
@@ -1500,55 +1636,61 @@ def train():
                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
             print('Saved test set')
 
-        # if i % args.i_testset == 0 and i > 0:
-        #     testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot1'.format(i))
-        #     os.makedirs(testsavedir, exist_ok=True)
-        #     radian = np.pi / 180.0
-        #     with torch.no_grad():
-        #         f_pose_rot=f_pose.clone().detach()
-        #         f_pose_rot[0,3]=30.0*radian
-        #
-        #         vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, transl=f_trans)
-        #         vertice_out = torch.squeeze(vertice_out)
-        #
-        #         outmesh_path = os.path.join(testsavedir, 'face.obj')
-        #         write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
-        #
-        #         vertice_out = vertice_out[:, [0, 2, 1]]
-        #         vertice_out[:, 1] = -vertice_out[:, 1]
-        #         vertice_out *= 8
-        #
-        #         print('test poses shape', poses[i_test].shape)
-        #
-        #         render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
-        #                     render_kwargs_test,
-        #                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
-        #     print('Saved test set')
-        #
-        # if i % args.i_testset == 0 and i > 0:
-        #     testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot2'.format(i))
-        #     os.makedirs(testsavedir, exist_ok=True)
-        #     radian = np.pi / 180.0
-        #     with torch.no_grad():
-        #         neck_pose=nn.Parameter(torch.zeros(1, 3).float().to(device))
-        #         neck_pose[0, 1] = 30.0 * radian
-        #
-        #         vertice_out, _ = flamelayer(f_shape, f_exp, f_pose,neck_pose=neck_pose, transl=f_trans)
-        #         vertice_out = torch.squeeze(vertice_out)
-        #
-        #         outmesh_path = os.path.join(testsavedir, 'face.obj')
-        #         write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
-        #
-        #         vertice_out = vertice_out[:, [0, 2, 1]]
-        #         vertice_out[:, 1] = -vertice_out[:, 1]
-        #         vertice_out *= 8
-        #
-        #         print('test poses shape', poses[i_test].shape)
-        #
-        #         render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
-        #                     render_kwargs_test,
-        #                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
-        #     print('Saved test set')
+        if i % args.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot1'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                f_pose_rot=f_pose.clone().detach()
+                f_pose_rot[0,3]=30.0*radian
+
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[faces.long() - 1, :]
+                triangles_out = vertice_out[faces.long() - 1, :]
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+                            render_kwargs_test,
+                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
+
+        if i % args.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot2'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                neck_pose=nn.Parameter(torch.zeros(1, 3).float().to(device))
+                neck_pose[0, 1] = 30.0 * radian
+
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose,neck_pose=neck_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[faces.long() - 1, :]
+                triangles_out = vertice_out[faces.long() - 1, :]
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out,triangles_org)
+                render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+                            render_kwargs_test,
+                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
 
         torch.cuda.empty_cache()
         if i % args.i_video == 0 and i > 0:
