@@ -1,4 +1,4 @@
-expname = face_adam_1_1_e003
+expname = face_adam_1_2_e0008
 basedir = ./logs
 datadir = ./data/face_scan/face_adam_1_voronoi
 dataset_type = blender
@@ -11,8 +11,11 @@ factor = 8
 llffhold = 8
 
 N_rand = 1024
-N_samples = 200
-N_importance = 0
+N_samples = 175
+N_importance = 75
+
+epsilon=0.008
+fake_epsilon=0.05
 
 perturb=1
 netdepth=8
@@ -26,11 +29,7 @@ raw_noise_std = 0.001
 render_only=False
 render_factor=0
 
-chunk=8192
-netchunk=8192
-chunk_render=1024
-
 i_embed=0
 
 i_video=20000
-i_testset=10000
+i_testset=20000

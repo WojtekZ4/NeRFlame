@@ -1,4 +1,4 @@
-expname = face_2_sophia_2_33_face_e001_xyz_calc
+expname = face_2_sophia_2_37_e001_rotation_test_1
 basedir = ./logs
 datadir = ./data/face_scan/face_sophia_2_360_voronoi
 dataset_type = blender
@@ -10,9 +10,12 @@ half_res = True
 factor = 8
 llffhold = 8
 
-N_rand = 512
-N_samples = 400
-N_importance = 0
+N_rand = 1024
+N_samples = 125
+N_importance = 75
+
+epsilon=0.01
+fake_epsilon=0.04
 
 perturb=1
 netdepth=8
@@ -26,11 +29,7 @@ raw_noise_std = 0.001
 render_only=False
 render_factor=0
 
-chunk=8192
-netchunk=8192
-chunk_render=1024
-
 i_embed=0
 
 i_video=20000
-i_testset=10000
+i_testset=200

@@ -1,6 +1,6 @@
-expname = face_2_garry_3_36_face_e004_N_importance_test
+expname = face_2_garry_4_39_e001_rotation_test_1
 basedir = ./logs
-datadir = ./data/face_scan/face_garry_3_no_black_big_angle
+datadir = ./data/face_scan/face_garry_4_no_hat
 dataset_type = blender
 
 no_batching = True
@@ -10,9 +10,12 @@ half_res = True
 factor = 8
 llffhold = 8
 
-N_rand = 512
-N_samples = 100
-N_importance = 100
+N_rand = 1024
+N_samples = 125
+N_importance = 75
+
+epsilon=0.01
+fake_epsilon=0.04
 
 perturb=1
 netdepth=8
@@ -25,10 +28,6 @@ raw_noise_std = 0.001
 
 render_only=False
 render_factor=0
-
-chunk=8192
-netchunk=8192
-chunk_render=1024
 
 i_embed=0
 
