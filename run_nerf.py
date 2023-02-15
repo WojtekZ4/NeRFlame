@@ -768,9 +768,9 @@ def render_rays(f_vert,
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     m = torch.nn.ReLU()
-    epsilon_v = torch.tensor(0.025)
-    epsilon_f = torch.tensor(0.025)
-    fake_epsilon_f = torch.tensor(0.05)
+    # epsilon_v = torch.tensor(0.025)
+    # epsilon_f = torch.tensor(0.025)
+    # fake_epsilon_f = torch.tensor(0.05)
     # distances_v = distance_calculator(pts, f_vert)
     if use_vert:
         pass
@@ -780,8 +780,8 @@ def render_rays(f_vert,
     else:
         distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
         # distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces,distances_v)
-        alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
-        fake_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, fake_epsilon_f)
+        alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon)
+        fake_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, fake_epsilon)
         # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
         # alpha = FLAME_based_alpha_calculator_f_solid(distances_f, m, epsilon_f)
 
@@ -825,7 +825,7 @@ def render_rays(f_vert,
         else:
             distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
             # distances_f = FLAME_based_alpha_calculator_5_face_version(pts, f_vert, f_faces, distances_v)
-            alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon_f)
+            alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon)
             # alpha = FLAME_based_alpha_calculator_f_gauss(distances_f, m, epsilon_f)
             # alpha = FLAME_based_alpha_calculator_f_solid(distances_f, m, epsilon_f)
 
@@ -1003,14 +1003,14 @@ def config_parser():
     parser.add_argument(
         '--shape_params',
         type=int,
-        default=150,
+        default=100,
         help='the number of shape parameters'
     )
 
     parser.add_argument(
         '--expression_params',
         type=int,
-        default=100,
+        default=50,
         help='the number of expression parameters'
     )
 
@@ -1240,11 +1240,11 @@ def train():
     w_shape_reg = 1e-4
     w_shape_reg_trans = 1e-2
     flamelayer = FLAME(args).to(device)
-    f_shape = nn.Parameter(torch.zeros(1, 150).float().to(device))
-    f_exp = nn.Parameter(torch.zeros(1, 100).float().to(device))
+    f_shape = nn.Parameter(torch.zeros(1, 100).float().to(device))
+    f_exp = nn.Parameter(torch.zeros(1, 50).float().to(device))
     f_pose = nn.Parameter(torch.zeros(1, 6).float().to(device))
     f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
-    f_lr = 0.005
+    f_lr = 0.001
     f_wd = 0.0001
     f_opt = torch.optim.Adam(
         params=[f_shape, f_exp, f_pose, f_trans],
@@ -1642,7 +1642,7 @@ def train():
             radian = np.pi / 180.0
             with torch.no_grad():
                 f_pose_rot=f_pose.clone().detach()
-                f_pose_rot[0,3]=30.0*radian
+                f_pose_rot[0,3]=10.0*radian
 
                 vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, transl=f_trans)
                 vertice_out = torch.squeeze(vertice_out)
@@ -1670,7 +1670,7 @@ def train():
             radian = np.pi / 180.0
             with torch.no_grad():
                 neck_pose=nn.Parameter(torch.zeros(1, 3).float().to(device))
-                neck_pose[0, 1] = 30.0 * radian
+                neck_pose[0, 1] = 20.0 * radian
 
                 vertice_out, _ = flamelayer(f_shape, f_exp, f_pose,neck_pose=neck_pose, transl=f_trans)
                 vertice_out = torch.squeeze(vertice_out)
