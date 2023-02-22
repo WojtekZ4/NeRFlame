@@ -20,6 +20,7 @@ from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
 # FLAME zone
+
 sys.path.append('./FLAME/')
 from FLAME import FLAME
 from os.path import join
@@ -27,7 +28,9 @@ from pytorch3d import _C
 # from pytorch3d.loss.point_mesh_distance import _PointFaceDistance
 from pytorch3d.structures import Meshes, Pointclouds
 from torch.autograd import Function
-
+from torchmetrics import StructuralSimilarityIndexMeasure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torchmetrics import PeakSignalNoiseRatio
 import tensorflow as tf
 from torch.distributions import Normal
 import datetime
@@ -366,7 +369,10 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
 # PointFaceDistance
 
-_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-3
+# _DEFAULT_MIN_TRIANGLE_AREA: float = 5e-3
+_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-4
+# _DEFAULT_MIN_TRIANGLE_AREA: float = 3e-4
+# _DEFAULT_MIN_TRIANGLE_AREA: float = 1e-5
 class _PointFaceDistance(Function):
     """
     Torch autograd Function wrapper PointFaceDistance Cuda implementation
@@ -1243,11 +1249,13 @@ def train():
     f_shape = nn.Parameter(torch.zeros(1, 100).float().to(device))
     f_exp = nn.Parameter(torch.zeros(1, 50).float().to(device))
     f_pose = nn.Parameter(torch.zeros(1, 6).float().to(device))
+    f_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
     f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
+
     f_lr = 0.001
     f_wd = 0.0001
     f_opt = torch.optim.Adam(
-        params=[f_shape, f_exp, f_pose, f_trans],
+        params=[f_shape, f_exp, f_pose, f_neck_pose, f_trans],
         lr=f_lr,
         weight_decay=f_wd
     )
@@ -1275,12 +1283,13 @@ def train():
         f_shape = ckpt['f_shape'].to(device)
         f_exp = ckpt['f_exp'].to(device)
         f_pose = ckpt['f_pose'].to(device)
+        f_neck_pose = ckpt['f_neck_pose'].to(device)
         f_trans = ckpt['f_trans'].to(device)
         args.epsilon = ckpt['epsilon']
         args.fake_epsilon = ckpt['fake_epsilon']
     # checkpoints hack
 
-    vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+    vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
     vertice = torch.squeeze(vertice)
     vertice = vertice.cuda()
 
@@ -1330,7 +1339,7 @@ def train():
                                        'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
             os.makedirs(testsavedir, exist_ok=True)
 
-            vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+            vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
             vertice_out = torch.squeeze(vertice_out)
             # outmesh_dir = './output/t_face_4_8'
             # safe_mkdir(outmesh_dir)
@@ -1344,8 +1353,54 @@ def train():
                                   gt_imgs=images,
                                   savedir=testsavedir, render_factor=args.render_factor)
             print('Done rendering', testsavedir)
-            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
 
+            if images is None:
+                imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+            else:
+                images_o = torch.tensor(images).to(device=device, dtype=torch.float)
+                rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+
+                print('images_o',images_o.shape)
+                print('rgbs', rgbs.shape)
+
+                images_o=torch.movedim(images_o, 3, 1)
+                rgbs = torch.movedim(rgbs, 3, 1)
+
+                print('images_o_m', images_o.shape)
+                print('rgbs_m', rgbs.shape)
+
+                print('images_o_d', images_o.dtype)
+                print('rgbs_d', rgbs.dtype)
+
+                # images_o = images_o.double()
+                # rgbs = rgbs.double()
+                #
+                # print('images_o_d', images_o.dtype)
+                # print('rgbs_d', rgbs.dtype)
+
+                psnr = PeakSignalNoiseRatio()
+                img_psnr_1=psnr(rgbs, images_o)
+
+                img_loss = img2mse(rgbs, images_o)
+                img_psnr_2 = mse2psnr(img_loss)
+
+                ssim = StructuralSimilarityIndexMeasure()
+                img_ssim=ssim(rgbs, images_o)
+
+                lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+                img_lpips=lpips(rgbs, images_o)
+
+                print("img_loss", img_loss)
+                print("img_psnr_1", img_psnr_1)
+                print("img_psnr_2", img_psnr_2)
+                print("img_ssim", img_ssim)
+                print("img_lpips", img_lpips)
+
+                outstats_path = os.path.join(testsavedir, 'stats.txt')
+                with open(outstats_path, 'w') as fp:
+                    for s,v in {"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}.items():
+                        fp.write('%s %f\n' % (s, v))
+                # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
             return
 
     # Prepare raybatch tensor if batching random rays
@@ -1388,7 +1443,8 @@ def train():
     # render_kwargs_train['epsilon']=max_eps
 
     # N_iters = 100000 + 1
-    N_iters = 200000 + 1
+    # N_iters = 200000 + 1
+    N_iters = 50000 + 1
     # N_iters = 20000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
@@ -1453,7 +1509,7 @@ def train():
 
         # FLAME zone
         f_opt.zero_grad()
-        vertice, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+        vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
         vertice = torch.squeeze(vertice)
         optimizer.zero_grad()
         # max_x = torch.max(vertice[:, 0])
@@ -1572,6 +1628,7 @@ def train():
                     'f_exp': f_exp,
                     'f_pose': f_pose,
                     'f_trans': f_trans,
+                    'f_neck_pose': f_neck_pose,
                     'epsilon': render_kwargs_test['epsilon'],
                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
                 }, path)
@@ -1586,6 +1643,7 @@ def train():
                     'f_exp': f_exp,
                     'f_pose': f_pose,
                     'f_trans': f_trans,
+                    'f_neck_pose': f_neck_pose,
                     'epsilon': render_kwargs_test['epsilon'],
                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
                 }, path)
@@ -1624,7 +1682,7 @@ def train():
             testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
             with torch.no_grad():
-                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, transl=f_trans)
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
                 vertice_out = torch.squeeze(vertice_out)
                 outmesh_path = os.path.join(testsavedir, 'face.obj')
                 write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
@@ -1636,6 +1694,30 @@ def train():
                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
             print('Saved test set')
 
+        # if i % args.i_testset == 0 and i > 0:
+        #     testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot0'.format(i))
+        #     os.makedirs(testsavedir, exist_ok=True)
+        #     with torch.no_grad():
+        #         vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
+        #         vertice_out = torch.squeeze(vertice_out)
+        #
+        #         outmesh_path = os.path.join(testsavedir, 'face.obj')
+        #         write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+        #
+        #         vertice_out = vertice_out[:, [0, 2, 1]]
+        #         vertice_out[:, 1] = -vertice_out[:, 1]
+        #         vertice_out *= 8
+        #
+        #         print('test poses shape', poses[i_test].shape)
+        #         triangles_org = vertice[faces.long() - 1, :]
+        #         triangles_out = vertice_out[faces.long() - 1, :]
+        #         render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+        #         render_path(vertice, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+        #                     render_kwargs_test,
+        #                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
+        #         render_kwargs_test['trans_mat'] = None
+        #     print('Saved test set')
+
         if i % args.i_testset == 0 and i > 0:
             testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot1'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
@@ -1644,7 +1726,7 @@ def train():
                 f_pose_rot=f_pose.clone().detach()
                 f_pose_rot[0,3]=10.0*radian
 
-                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, transl=f_trans)
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
                 vertice_out = torch.squeeze(vertice_out)
 
                 outmesh_path = os.path.join(testsavedir, 'face.obj')
@@ -1669,10 +1751,10 @@ def train():
             os.makedirs(testsavedir, exist_ok=True)
             radian = np.pi / 180.0
             with torch.no_grad():
-                neck_pose=nn.Parameter(torch.zeros(1, 3).float().to(device))
-                neck_pose[0, 1] = 20.0 * radian
+                out_neck_pose=nn.Parameter(torch.zeros(1, 3).float().to(device))
+                out_neck_pose[0, 1] = 20.0 * radian
 
-                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose,neck_pose=neck_pose, transl=f_trans)
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=out_neck_pose, transl=f_trans)
                 vertice_out = torch.squeeze(vertice_out)
 
                 outmesh_path = os.path.join(testsavedir, 'face.obj')
