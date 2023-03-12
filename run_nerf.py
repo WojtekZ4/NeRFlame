@@ -72,12 +72,12 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
     return outputs
 
 
-def batchify_rays(f_vert, f_faces, rays_flat, chunk=1024 * 32, **kwargs):
+def batchify_rays(f_vert, f_faces, rays_flat, chunk=1024 * 32, offset=None, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(f_vert, f_faces, rays_flat[i:i + chunk], **kwargs)
+        ret = render_rays(f_vert, f_faces, rays_flat[i:i + chunk], offset=offset, **kwargs)
         torch.cuda.empty_cache()
         for k in ret:
             if k not in all_ret:
@@ -90,7 +90,7 @@ def batchify_rays(f_vert, f_faces, rays_flat, chunk=1024 * 32, **kwargs):
 
 def render(f_vert, f_faces, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
-           use_viewdirs=False, c2w_staticcam=None,
+           use_viewdirs=False, c2w_staticcam=None, offset=None,
            **kwargs):
     """Render rays
     Args:
@@ -145,7 +145,7 @@ def render(f_vert, f_faces, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=T
         rays = torch.cat([rays, viewdirs], -1)
 
     # Render and reshape
-    all_ret = batchify_rays(f_vert, f_faces, rays, chunk, **kwargs)
+    all_ret = batchify_rays(f_vert, f_faces, rays, chunk, offset=offset, **kwargs)
     for k in all_ret:
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
         all_ret[k] = torch.reshape(all_ret[k], k_sh)
@@ -157,7 +157,7 @@ def render(f_vert, f_faces, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=T
 
 
 def render_path(f_vert, f_faces, render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None,
-                render_factor=0):
+                render_factor=0, offset=None):
     H, W, focal = hwf
 
     if render_factor != 0:
@@ -173,7 +173,55 @@ def render_path(f_vert, f_faces, render_poses, hwf, K, chunk, render_kwargs, gt_
     for i, c2w in enumerate(tqdm(render_poses)):
         print(i, time.time() - t)
         t = time.time()
-        rgb, disp, acc, _ = render(f_vert, f_faces, H, W, K, chunk=chunk, c2w=c2w[:3, :4], **render_kwargs)
+        rgb, disp, acc, _ = render(f_vert, f_faces, H, W, K, chunk=chunk, c2w=c2w[:3, :4], offset=offset, **render_kwargs)
+        rgbs.append(rgb.cpu().numpy())
+        disps.append(disp.cpu().numpy())
+        if i == 0:
+            print(rgb.shape, disp.shape)
+
+        """
+        if gt_imgs is not None and render_factor==0:
+            p = -10. * np.log10(np.mean(np.square(rgb.cpu().numpy() - gt_imgs[i])))
+            print(p)
+        """
+
+        if savedir is not None:
+            rgb8 = to8b(rgbs[-1])
+            filename = os.path.join(savedir, '{:03d}.png'.format(i))
+            imageio.imwrite(filename, rgb8)
+
+    rgbs = np.stack(rgbs, 0)
+    disps = np.stack(disps, 0)
+
+    return rgbs, disps
+
+def render_animate(f_vert_org, f_verts, f_faces, render_pose, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None,
+                render_factor=0, offset=None):
+    H, W, focal = hwf
+
+    if render_factor != 0:
+        # Render downsampled for speed
+        H = H // render_factor
+        W = W // render_factor
+        focal = focal / render_factor
+
+    rgbs = []
+    disps = []
+
+    t = time.time()
+    for i, f_vert in enumerate(tqdm(f_verts)):
+        print(i, time.time() - t)
+        t = time.time()
+
+        print('f_vert_org ', f_vert_org.shape)
+        print('f_vert ', f_vert.shape)
+
+        triangles_org = f_vert_org[f_faces.long(), :]
+        triangles_out = f_vert[f_faces.long(), :]
+        render_kwargs['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+        rgb, disp, acc, _ = render(f_vert, f_faces, H, W, K, chunk=chunk, c2w=render_pose[:3, :4], offset=offset, **render_kwargs)
+        render_kwargs['trans_mat'] = None
+
         rgbs.append(rgb.cpu().numpy())
         disps.append(disp.cpu().numpy())
         if i == 0:
@@ -205,8 +253,8 @@ def create_nerf(args):
     embeddirs_fn = None
     if args.use_viewdirs:
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    # output_ch = 5 if args.N_importance > 0 else 4
-    output_ch = 3
+    output_ch = 5 if args.N_importance > 0 else 4
+    # output_ch = 3
     skips = [4]
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -269,7 +317,7 @@ def create_nerf(args):
         'raw_noise_std': args.raw_noise_std,
         'use_vert': False,
         'epsilon': args.epsilon,
-        'fake_epsilon': args.fake_epsilon,
+        'fake_epsilon': args.fake_epsilon
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -330,7 +378,11 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         # dists_c = dists.clone()
         # dists_c[..., -1]=torch.mean(dists[..., :-1],dim=1)
         # alpha = torch.clamp((alpha_overide + noise) * (dists_c / torch.mean(dists[..., :-1],dim=1)[...,None]) , min=0.0, max=1.0) # [N_rays, N_samples]
+
         alpha = alpha_overide
+
+        # alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+        # alpha = alpha * alpha_overide
 
     if fake_alpha is None:
         fake_alpha = alpha
@@ -710,7 +762,8 @@ def render_rays(f_vert,
                 use_vert=False,
                 epsilon=0.04,
                 fake_epsilon=0.06,
-                trans_mat=None):
+                trans_mat=None,
+                offset=None):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -773,6 +826,7 @@ def render_rays(f_vert,
 
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
+
     m = torch.nn.ReLU()
     # epsilon_v = torch.tensor(0.025)
     # epsilon_f = torch.tensor(0.025)
@@ -802,6 +856,9 @@ def render_rays(f_vert,
     # print('viewdirs', viewdirs)
     # print('viewdirs_s', viewdirs.size())
 
+    if offset is not None:
+        pts += offset
+
     if trans_mat is not None:
         trans_mat_organ = trans_mat[idx_f, :]
         pts = transform_pt(pts, trans_mat_organ)
@@ -809,7 +866,7 @@ def render_rays(f_vert,
     #     raw = run_network(pts)
     raw = network_query_fn(pts, viewdirs, network_fn)
     rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                 pytest=pytest, alpha_overide=alpha,fake_alpha=fake_alpha)
+                                                                 pytest=pytest, alpha_overide=alpha, fake_alpha=fake_alpha)
 
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
@@ -821,6 +878,7 @@ def render_rays(f_vert,
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
                                                             None]  # [N_rays, N_samples + N_importance, 3]
+
 
         # distances_v = distance_calculator(pts, f_vert)
         if use_vert:
@@ -839,6 +897,9 @@ def render_rays(f_vert,
         # alpha = FLAME_based_alpha_calculator_2(pts, f_vert, m, e)
 
         run_fn = network_fn if network_fine is None else network_fine
+
+        if offset is not None:
+            pts += offset
 
         if trans_mat is not None:
             trans_mat_organ = trans_mat[idx_f, :]
@@ -1287,6 +1348,9 @@ def train():
         f_trans = ckpt['f_trans'].to(device)
         args.epsilon = ckpt['epsilon']
         args.fake_epsilon = ckpt['fake_epsilon']
+
+
+
     # checkpoints hack
 
     vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
@@ -1326,6 +1390,7 @@ def train():
     # Short circuit if only rendering out from trained model
     if args.render_only:
         print('RENDER ONLY')
+        radian = np.pi / 180.0
         with torch.no_grad():
 
             if args.render_test:
@@ -1334,73 +1399,333 @@ def train():
             else:
                 # Default is smoother render_poses path
                 images = None
+                render_poses=torch.cat((render_poses[:10], render_poses[30:]))
+
+            # testsavedir = os.path.join(basedir, expname,
+            #                            'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+            # os.makedirs(testsavedir, exist_ok=True)
+            #
+            # vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
+            # vertice_out = torch.squeeze(vertice_out)
+            # # outmesh_dir = './output/t_face_4_8'
+            # # safe_mkdir(outmesh_dir)
+            # outmesh_path = os.path.join(testsavedir, 'face.obj')
+            #
+            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+            #
+            # print('test poses shape', render_poses.shape)
+            #
+            # rgbs, _ = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+            #                       gt_imgs=images,
+            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+            # print('Done rendering', testsavedir)
+            #
+            # if images is None:
+            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+            # else:
+            #     images_o = torch.tensor(images).to(device=device, dtype=torch.float)
+            #     rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+            #
+            #     print('images_o',images_o.shape)
+            #     print('rgbs', rgbs.shape)
+            #
+            #     images_o=torch.movedim(images_o, 3, 1)
+            #     rgbs = torch.movedim(rgbs, 3, 1)
+            #
+            #     print('images_o_m', images_o.shape)
+            #     print('rgbs_m', rgbs.shape)
+            #
+            #     print('images_o_d', images_o.dtype)
+            #     print('rgbs_d', rgbs.dtype)
+            #
+            #     # images_o = images_o.double()
+            #     # rgbs = rgbs.double()
+            #     #
+            #     # print('images_o_d', images_o.dtype)
+            #     # print('rgbs_d', rgbs.dtype)
+            #
+            #     psnr = PeakSignalNoiseRatio()
+            #     img_psnr_1=psnr(rgbs, images_o)
+            #
+            #     img_loss = img2mse(rgbs, images_o)
+            #     img_psnr_2 = mse2psnr(img_loss)
+            #
+            #     ssim = StructuralSimilarityIndexMeasure()
+            #     img_ssim=ssim(rgbs, images_o)
+            #
+            #     lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+            #     img_lpips=lpips(rgbs, images_o)
+            #
+            #     print("img_loss", img_loss)
+            #     print("img_psnr_1", img_psnr_1)
+            #     print("img_psnr_2", img_psnr_2)
+            #     print("img_ssim", img_ssim)
+            #     print("img_lpips", img_lpips)
+            #
+            #     outstats_path = os.path.join(testsavedir, 'stats.txt')
+            #     with open(outstats_path, 'w') as fp:
+            #         for s,v in {"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}.items():
+            #             fp.write('%s %f\n' % (s, v))
+            #     # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
+
+            # ---
+
+            # other_ckpt_path = os.path.join(basedir, expname, 'other', 'other_ckpt.tar')
+            # other_ckpt = torch.load(other_ckpt_path)
+            # f_shape_other = other_ckpt['f_shape'].to(device)
+            # f_exp_other = other_ckpt['f_exp'].to(device)
+            # # f_pose_other = other_ckpt['f_pose'].to(device)
+            # # f_pose_other[0, 0] = f_pose[0, 0]
+            # # f_pose_other[0, 1] = f_pose[0, 1]
+            # # f_pose_other[0, 2] = f_pose[0, 2]
+            # # f_neck_pose_other = other_ckpt['f_neck_pose'].to(device)
+            #
+            # testsavedir = os.path.join(basedir, expname,
+            #                            'renderonly_exp_trans_2_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+            # os.makedirs(testsavedir, exist_ok=True)
+            #
+            # vertice_out, _ = flamelayer(f_shape_other, f_exp_other, f_pose, neck_pose=f_neck_pose, transl=f_trans)
+            # vertice_out = torch.squeeze(vertice_out)
+            # # outmesh_dir = './output/t_face_4_8'
+            # # safe_mkdir(outmesh_dir)
+            # outmesh_path = os.path.join(testsavedir, 'face.obj')
+            #
+            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+            #
+            # print('test poses shape', render_poses.shape)
+            #
+            # vertice_out = vertice_out[:, [0, 2, 1]]
+            # vertice_out[:, 1] = -vertice_out[:, 1]
+            # vertice_out *= 8
+            #
+            # # print("faces -1 ",faces.long() - 1)
+            # # print("faces +0 ", faces.long() )
+            # # print("faces +1 ", faces.long() + 1)
+            #
+            # triangles_org = vertice[faces.long(), :]
+            # triangles_out = vertice_out[faces.long(), :]
+            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+            #                       gt_imgs=images,
+            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+            # render_kwargs_test['trans_mat'] = None
+            # print('Done rendering', testsavedir)
+            #
+            # if images is None:
+            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+
+            # ---
 
             testsavedir = os.path.join(basedir, expname,
-                                       'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+                                       'renderonly_rot_mouth_animate_{}_{:06d}'.format('test' if args.render_test else 'path',
+                                                                               start))
             os.makedirs(testsavedir, exist_ok=True)
 
-            vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
-            vertice_out = torch.squeeze(vertice_out)
-            # outmesh_dir = './output/t_face_4_8'
-            # safe_mkdir(outmesh_dir)
-            outmesh_path = os.path.join(testsavedir, 'face.obj')
+            f_pose_rot = f_pose.clone().detach()
 
-            write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+            start_setting = f_pose[0, 3]
+            end_setting = start_setting + 15.0 * radian
 
-            print('test poses shape', render_poses.shape)
+            progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
+            progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
+            progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
 
-            rgbs, _ = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
-                                  gt_imgs=images,
-                                  savedir=testsavedir, render_factor=args.render_factor)
+            # print('progres_settings ', progres_settings)
+
+            all_verticles_l = []
+
+            for setting in progres_settings:
+                f_pose_rot[0, 3] = setting
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+
+                all_verticles_l.append(vertice_out)
+                # print('all_verticles_l ', all_verticles_l.shape)
+                # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
+
+            all_verticles = torch.stack(all_verticles_l)
+
+
+            print('Start rendering', testsavedir)
+
+            rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render, render_kwargs_test,
+                                  gt_imgs=None,
+                                  savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+
             print('Done rendering', testsavedir)
 
-            if images is None:
-                imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-            else:
-                images_o = torch.tensor(images).to(device=device, dtype=torch.float)
-                rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
 
-                print('images_o',images_o.shape)
-                print('rgbs', rgbs.shape)
+            # ---
 
-                images_o=torch.movedim(images_o, 3, 1)
-                rgbs = torch.movedim(rgbs, 3, 1)
+            testsavedir = os.path.join(basedir, expname,
+                                       'renderonly_rot_neck_animate_{}_{:06d}'.format(
+                                           'test' if args.render_test else 'path',
+                                           start))
+            os.makedirs(testsavedir, exist_ok=True)
 
-                print('images_o_m', images_o.shape)
-                print('rgbs_m', rgbs.shape)
+            f_neck_pose_rot = f_neck_pose.clone().detach()
 
-                print('images_o_d', images_o.dtype)
-                print('rgbs_d', rgbs.dtype)
+            start_setting = f_neck_pose[0, 1]
+            end_setting = start_setting + 20.0 * radian
 
-                # images_o = images_o.double()
-                # rgbs = rgbs.double()
+            progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
+            progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
+            progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
+
+            # print('progres_settings ', progres_settings)
+
+            all_verticles_l = []
+
+            for setting in progres_settings:
+                f_neck_pose_rot[0, 1] = setting
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                all_verticles_l.append(vertice_out)
+                # print('all_verticles_l ', all_verticles_l.shape)
+                # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
+
+            all_verticles = torch.stack(all_verticles_l)
+
+            print('Start rendering', testsavedir)
+
+            rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
+                                     render_kwargs_test,
+                                     gt_imgs=None,
+                                     savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+
+            print('Done rendering', testsavedir)
+
+            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+
+            # ---
+
+            # f_pose_rot = f_pose.clone().detach()
+            # f_pose_rot[0, 3] = 10.0 * radian
+            #
+            # testsavedir = os.path.join(basedir, expname,
+            #                            'renderonly_rot_mouth_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+            # os.makedirs(testsavedir, exist_ok=True)
+            #
+            # vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
+            # vertice_out = torch.squeeze(vertice_out)
+            # # outmesh_dir = './output/t_face_4_8'
+            # # safe_mkdir(outmesh_dir)
+            # outmesh_path = os.path.join(testsavedir, 'face.obj')
+            #
+            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+            #
+            # print('test poses shape', render_poses.shape)
+            #
+            # vertice_out = vertice_out[:, [0, 2, 1]]
+            # vertice_out[:, 1] = -vertice_out[:, 1]
+            # vertice_out *= 8
+            #
+            # # print("faces -1 ",faces.long() - 1)
+            # # print("faces +0 ", faces.long() )
+            # # print("faces +1 ", faces.long() + 1)
+            #
+            # triangles_org = vertice[faces.long(), :]
+            # triangles_out = vertice_out[faces.long(), :]
+            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+            #                       gt_imgs=images,
+            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+            # render_kwargs_test['trans_mat'] = None
+            # print('Done rendering', testsavedir)
+            #
+            # if images is None:
+            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+
+            # ---
+            #
+            # f_neck_pose_rot=nn.Parameter(torch.zeros(1, 3).float().to(device))
+            # f_neck_pose_rot[0, 1] = 20.0 * radian
+            #
+            # testsavedir = os.path.join(basedir, expname,
+            #                            'renderonly_rot_neck_{}_{:06d}'.format('test' if args.render_test else 'path', start))
+            # os.makedirs(testsavedir, exist_ok=True)
+            #
+            # vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
+            # vertice_out = torch.squeeze(vertice_out)
+            # # outmesh_dir = './output/t_face_4_8'
+            # # safe_mkdir(outmesh_dir)
+            # outmesh_path = os.path.join(testsavedir, 'face.obj')
+            #
+            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
+            #
+            # print('test poses shape', render_poses.shape)
+            #
+            # vertice_out = vertice_out[:, [0, 2, 1]]
+            # vertice_out[:, 1] = -vertice_out[:, 1]
+            # vertice_out *= 8
+            #
+            # triangles_org = vertice[faces.long(), :]
+            # triangles_out = vertice_out[faces.long(), :]
+            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
+            #                       gt_imgs=images,
+            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+            # render_kwargs_test['trans_mat'] = None
+            # print('Done rendering', testsavedir)
+            #
+            # if images is None:
+            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+            # else:
+                # images_o = torch.tensor(images).to(device=device, dtype=torch.float)
+                # rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+                #
+                # print('images_o',images_o.shape)
+                # print('rgbs', rgbs.shape)
+                #
+                # images_o=torch.movedim(images_o, 3, 1)
+                # rgbs = torch.movedim(rgbs, 3, 1)
+                #
+                # print('images_o_m', images_o.shape)
+                # print('rgbs_m', rgbs.shape)
                 #
                 # print('images_o_d', images_o.dtype)
                 # print('rgbs_d', rgbs.dtype)
-
-                psnr = PeakSignalNoiseRatio()
-                img_psnr_1=psnr(rgbs, images_o)
-
-                img_loss = img2mse(rgbs, images_o)
-                img_psnr_2 = mse2psnr(img_loss)
-
-                ssim = StructuralSimilarityIndexMeasure()
-                img_ssim=ssim(rgbs, images_o)
-
-                lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
-                img_lpips=lpips(rgbs, images_o)
-
-                print("img_loss", img_loss)
-                print("img_psnr_1", img_psnr_1)
-                print("img_psnr_2", img_psnr_2)
-                print("img_ssim", img_ssim)
-                print("img_lpips", img_lpips)
-
-                outstats_path = os.path.join(testsavedir, 'stats.txt')
-                with open(outstats_path, 'w') as fp:
-                    for s,v in {"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}.items():
-                        fp.write('%s %f\n' % (s, v))
-                # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
+                #
+                # # images_o = images_o.double()
+                # # rgbs = rgbs.double()
+                # #
+                # # print('images_o_d', images_o.dtype)
+                # # print('rgbs_d', rgbs.dtype)
+                #
+                # psnr = PeakSignalNoiseRatio()
+                # img_psnr_1=psnr(rgbs, images_o)
+                #
+                # img_loss = img2mse(rgbs, images_o)
+                # img_psnr_2 = mse2psnr(img_loss)
+                #
+                # ssim = StructuralSimilarityIndexMeasure()
+                # img_ssim=ssim(rgbs, images_o)
+                #
+                # lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+                # img_lpips=lpips(rgbs, images_o)
+                #
+                # print("img_loss", img_loss)
+                # print("img_psnr_1", img_psnr_1)
+                # print("img_psnr_2", img_psnr_2)
+                # print("img_ssim", img_ssim)
+                # print("img_lpips", img_lpips)
+                #
+                # outstats_path = os.path.join(testsavedir, 'stats.txt')
+                # with open(outstats_path, 'w') as fp:
+                #     for s,v in {"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}.items():
+                #         fp.write('%s %f\n' % (s, v))
+                # # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
             return
 
     # Prepare raybatch tensor if batching random rays
@@ -1444,7 +1769,8 @@ def train():
 
     # N_iters = 100000 + 1
     # N_iters = 200000 + 1
-    N_iters = 50000 + 1
+    # N_iters = 50000 + 1
+    N_iters = 40000 + 1
     # N_iters = 20000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
@@ -1558,7 +1884,7 @@ def train():
 
         render_kwargs_train['use_vert'] = False
         rgb_f, disp_f, acc_f, extras_f = render(vertice, faces, H, W, K, chunk=args.chunk, rays=batch_rays,
-                                                verbose=i < 10, retraw=True,
+                                                verbose=i < 10, retraw=True, offset = f_trans,
                                                 **render_kwargs_train)
 
         img_loss_f = img2mse(rgb_f, target_s)
@@ -1691,7 +2017,7 @@ def train():
 
                 render_path(vertice, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
                             render_kwargs_test,
-                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
+                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
             print('Saved test set')
 
         # if i % args.i_testset == 0 and i > 0:
@@ -1709,8 +2035,8 @@ def train():
         #         vertice_out *= 8
         #
         #         print('test poses shape', poses[i_test].shape)
-        #         triangles_org = vertice[faces.long() - 1, :]
-        #         triangles_out = vertice_out[faces.long() - 1, :]
+        #         triangles_org = vertice[faces.long(), :]
+        #         triangles_out = vertice_out[faces.long(), :]
         #         render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
         #         render_path(vertice, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
         #                     render_kwargs_test,
@@ -1737,8 +2063,8 @@ def train():
                 vertice_out *= 8
 
                 print('test poses shape', poses[i_test].shape)
-                triangles_org = vertice[faces.long() - 1, :]
-                triangles_out = vertice_out[faces.long() - 1, :]
+                triangles_org = vertice[faces.long(), :]
+                triangles_out = vertice_out[faces.long(), :]
                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
                 render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
                             render_kwargs_test,
@@ -1765,8 +2091,8 @@ def train():
                 vertice_out *= 8
 
                 print('test poses shape', poses[i_test].shape)
-                triangles_org = vertice[faces.long() - 1, :]
-                triangles_out = vertice_out[faces.long() - 1, :]
+                triangles_org = vertice[faces.long(), :]
+                triangles_out = vertice_out[faces.long(), :]
                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out,triangles_org)
                 render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
                             render_kwargs_test,
@@ -1779,7 +2105,7 @@ def train():
             # Turn on testing mode
             with torch.no_grad():
                 rgbs, disps = render_path(vertice, faces, render_poses, hwf, K, args.chunk_render,
-                                          render_kwargs_test)
+                                          render_kwargs_test, offset=f_trans)
             print('Done, saving', rgbs.shape, disps.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_f_{:06d}_'.format(expname, i))
             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
@@ -1825,7 +2151,7 @@ def train():
         with train_summary_writer.as_default():
             tf.summary.scalar('loss', data=loss.item(), step=global_step)
             tf.summary.scalar('psnr', data=psnr.item(), step=global_step)
-
+            # tf.summary.scalar('lr', data=torch.tensor(param_group['lr']).item(), step=global_step)
             # tf.summary.scalar('loss_v', data=loss_v.item(), step=global_step)
             # tf.summary.scalar('psnr_v', data=psnr_v.item(), step=global_step)
             #
