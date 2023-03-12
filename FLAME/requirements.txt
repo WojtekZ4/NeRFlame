@@ -1,8 +1,0 @@
-numpy==1.18.1
-torch
-torchvision
-pyrender==0.1.39
-trimesh==3.6.18
-smplx
-pickle
-chumpy==0.69

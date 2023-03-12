@@ -1,0 +1,41 @@
+expname = face_M1000_N_1_e0016_final
+basedir = ./logs
+datadir = ./data/face_scan/face_M1000_N
+dataset_type = blender
+
+no_batching = False
+white_bkgd = True
+half_res = True
+
+factor = 8
+llffhold = 8
+
+N_rand = 1024
+N_samples = 140
+N_importance = 140
+
+lrate=0.001
+lrate_decay=750
+
+epsilon=0.016
+fake_epsilon=0.04
+
+perturb=1
+netdepth=8
+netdepth_fine=8
+netwidth=256
+netwidth_fine=256
+
+use_viewdirs = False
+
+render_only=True
+render_test=True
+render_factor=0
+
+chunk=16384
+chunk_render=16384
+
+i_embed=0
+
+i_video=90000
+i_testset=90000
