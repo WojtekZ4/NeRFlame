@@ -239,8 +239,8 @@ def create_nerf(args):
     embeddirs_fn = None
     if args.use_viewdirs:
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    # output_ch = 5 if args.N_importance > 0 else 4
-    output_ch = 3
+    output_ch = 5 if args.N_importance > 0 else 4
+    # output_ch = 3
     skips = [4]
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -1352,97 +1352,97 @@ def train():
 
             # ---
 
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_mouth_animate_{}_{:06d}'.format(
-            #                                'test' if args.render_test else 'path',
-            #                                start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # f_pose_rot = f_pose.clone().detach()
-            #
-            # start_setting = f_pose[0, 3]
-            # end_setting = start_setting + 15.0 * radian
-            #
-            # progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
-            # progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
-            # progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
-            #
-            # # print('progres_settings ', progres_settings)
-            #
-            # all_verticles_l = []
-            #
-            # for setting in progres_settings:
-            #     f_pose_rot[0, 3] = setting
-            #     vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
-            #     vertice_out = torch.squeeze(vertice_out)
-            #
-            #     vertice_out = vertice_out[:, [0, 2, 1]]
-            #     vertice_out[:, 1] = -vertice_out[:, 1]
-            #     vertice_out *= 8
-            #
-            #     all_verticles_l.append(vertice_out)
-            #     # print('all_verticles_l ', all_verticles_l.shape)
-            #     # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
-            #
-            # all_verticles = torch.stack(all_verticles_l)
-            #
-            # print('Start rendering', testsavedir)
-            #
-            # rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
-            #                          render_kwargs_test,
-            #                          gt_imgs=None,
-            #                          savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            #
-            # print('Done rendering', testsavedir)
-            #
-            # imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+            testsavedir = os.path.join(basedir, expname,
+                                       'renderonly_rot_mouth_animate_{}_{:06d}'.format(
+                                           'test' if args.render_test else 'path',
+                                           start))
+            os.makedirs(testsavedir, exist_ok=True)
+
+            f_pose_rot = f_pose.clone().detach()
+
+            start_setting = f_pose[0, 3]
+            end_setting = start_setting + 15.0 * radian
+
+            progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
+            progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
+            progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
+
+            # print('progres_settings ', progres_settings)
+
+            all_verticles_l = []
+
+            for setting in progres_settings:
+                f_pose_rot[0, 3] = setting
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                all_verticles_l.append(vertice_out)
+                # print('all_verticles_l ', all_verticles_l.shape)
+                # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
+
+            all_verticles = torch.stack(all_verticles_l)
+
+            print('Start rendering', testsavedir)
+
+            rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
+                                     render_kwargs_test,
+                                     gt_imgs=None,
+                                     savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+
+            print('Done rendering', testsavedir)
+
+            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
 
             # ---
 
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_neck_animate_{}_{:06d}'.format(
-            #                                'test' if args.render_test else 'path',
-            #                                start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # f_neck_pose_rot = f_neck_pose.clone().detach()
-            #
-            # start_setting = f_neck_pose[0, 1]
-            # end_setting = start_setting + 20.0 * radian
-            #
-            # progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
-            # progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
-            # progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
-            #
-            # # print('progres_settings ', progres_settings)
-            #
-            # all_verticles_l = []
-            #
-            # for setting in progres_settings:
-            #     f_neck_pose_rot[0, 1] = setting
-            #     vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
-            #     vertice_out = torch.squeeze(vertice_out)
-            #
-            #     vertice_out = vertice_out[:, [0, 2, 1]]
-            #     vertice_out[:, 1] = -vertice_out[:, 1]
-            #     vertice_out *= 8
-            #
-            #     all_verticles_l.append(vertice_out)
-            #     # print('all_verticles_l ', all_verticles_l.shape)
-            #     # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
-            #
-            # all_verticles = torch.stack(all_verticles_l)
-            #
-            # print('Start rendering', testsavedir)
-            #
-            # rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
-            #                          render_kwargs_test,
-            #                          gt_imgs=None,
-            #                          savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            #
-            # print('Done rendering', testsavedir)
-            #
-            # imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
+            testsavedir = os.path.join(basedir, expname,
+                                       'renderonly_rot_neck_animate_{}_{:06d}'.format(
+                                           'test' if args.render_test else 'path',
+                                           start))
+            os.makedirs(testsavedir, exist_ok=True)
+
+            f_neck_pose_rot = f_neck_pose.clone().detach()
+
+            start_setting = f_neck_pose[0, 1]
+            end_setting = start_setting + 20.0 * radian
+
+            progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
+            progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
+            progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
+
+            # print('progres_settings ', progres_settings)
+
+            all_verticles_l = []
+
+            for setting in progres_settings:
+                f_neck_pose_rot[0, 1] = setting
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                all_verticles_l.append(vertice_out)
+                # print('all_verticles_l ', all_verticles_l.shape)
+                # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
+
+            all_verticles = torch.stack(all_verticles_l)
+
+            print('Start rendering', testsavedir)
+
+            rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
+                                     render_kwargs_test,
+                                     gt_imgs=None,
+                                     savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
+
+            print('Done rendering', testsavedir)
+
+            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
 
             # ---
 

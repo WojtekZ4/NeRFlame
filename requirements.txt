@@ -1,4 +1,9 @@
-torch==1.11.0
+numpy==1.18.1
+chumpy
+pyrender==0.1.39
+trimesh==3.6.18
+smplx
+torch==1.13.0
 torchvision>=0.9.1
 imageio
 imageio-ffmpeg
@@ -7,10 +12,4 @@ configargparse
 tensorboard>=2.0
 tqdm
 opencv-python
-numpy==1.18.1
-pyrender==0.1.39
-trimesh==3.6.18
-smplx
-pickle
-chumpy==0.69
-pytorch3d
+pickle5

@@ -1,4 +1,4 @@
-expname = face_f1042_S_1_e0016_final
+expname = face_f1042_S
 basedir = ./logs
 datadir = ./data/face_scan/face_f1042_S
 dataset_type = blender
@@ -28,7 +28,7 @@ netwidth_fine=256
 
 use_viewdirs = False
 
-render_only=True
+render_only=False
 render_test=False
 render_factor=0
 
@@ -37,5 +37,5 @@ chunk_render=16384
 
 i_embed=0
 
-i_video=90000
-i_testset=90000
+i_video=10000
+i_testset=10000

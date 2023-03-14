@@ -1,11 +1,11 @@
-expname = face_f1036_A_1_e0016_final
+expname = face_f1036_A
 basedir = ./logs
 datadir = ./data/face_scan/face_f1036_A
 dataset_type = blender
 
 no_batching = False
 white_bkgd = True
-half_res = False
+half_res = True
 
 factor = 8
 llffhold = 8
@@ -28,7 +28,7 @@ netwidth_fine=256
 
 use_viewdirs = False
 
-render_only=True
+render_only=False
 render_test=False
 render_factor=0
 
@@ -37,5 +37,5 @@ chunk_render=16384
 
 i_embed=0
 
-i_video=90000
-i_testset=90000
+i_video=10000
+i_testset=10000

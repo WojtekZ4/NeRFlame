@@ -9,11 +9,17 @@ This repository proposes a novel approach, named NeRFlame, which combines the st
 Unlike conventional NeRF-based architectures that utilize neural networks to model RGB colors and volume density, NeRFlame employs FLAME mesh as an explicit density volume. As a result, color values are non-zero only in the proximity of the FLAME mesh. This FLAME backbone is then integrated into the NeRF architecture to predict RGB colors, allowing NeRFlame to explicitly model volume density and implicitly model RGB colors.
 ## Installation
 
+Tested on Python 3.8.
+
 ```
 git clone https://github.com/WojtekZ4/NeRFlame.git
 cd NeRFlame
 pip install -r requirements.txt
 ```
+
+Download and install Pytorch3d as described [here](https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md).
+
+Download FLAME models and landmark embedings and place them inside `FLAME` folder, as shown [here](https://github.com/soubhiksanyal/FLAME_PyTorch).
 
 
 ## How To Run?
