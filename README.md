@@ -4,9 +4,15 @@ Traditional 3D face models are based on mesh representations with texture. One o
 Unfortunately, such models have problems with capturing geometric and appearance details. 
 In contrast to mesh representation, the neural radiance field  (NeRF) produces extremely sharp renders. But implicit methods are hard to animate and do not generalize well to unseen expressions. It is not trivial to effectively control NeRF models to obtain face manipulation. 
 
+<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/m1047_S_yawn.gif" width="300" height="300">
+
 This repository proposes a novel approach, named NeRFlame, which combines the strengths of both NeRF and FLAME methods. Our method enables high-quality rendering capabilities of NeRF while also offering complete control over the visual appearance, similar to FLAME.
 
+<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/f1036_A_turn.gif" width="300" height="300">
+
 Unlike conventional NeRF-based architectures that utilize neural networks to model RGB colors and volume density, NeRFlame employs FLAME mesh as an explicit density volume. As a result, color values are non-zero only in the proximity of the FLAME mesh. This FLAME backbone is then integrated into the NeRF architecture to predict RGB colors, allowing NeRFlame to explicitly model volume density and implicitly model RGB colors.
+
+
 ## Installation
 
 Tested on Python 3.8.
