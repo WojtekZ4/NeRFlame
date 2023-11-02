@@ -3,10 +3,13 @@ import sys
 import time
 
 import imageio
+import torch
 from torch.autograd.function import once_differentiable
+from torchmetrics import StructuralSimilarityIndexMeasure, PeakSignalNoiseRatio
+from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
 from tqdm import tqdm, trange
 
-from load_LINEMOD import load_LINEMOD_data
+# from load_LINEMOD import load_LINEMOD_data
 from load_blender import load_blender_data
 from load_deepvoxels import load_dv_data
 from load_llff import load_llff_data
@@ -17,10 +20,10 @@ from FLAME import FLAME
 from pytorch3d import _C
 from pytorch3d.structures import Meshes, Pointclouds
 from torch.autograd import Function
-# import tensorflow as tf
-# import datetime
+import tensorflow as tf
+import datetime
 from torch.distributions import Normal
-
+import cv2
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -90,7 +93,7 @@ def render(f_vert, f_faces, H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=T
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
-      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for 
+      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for
        camera while using other c2w argument for viewing directions.
     Returns:
       rgb_map: [batch_size, 3]. Predicted RGB values for rays.
@@ -240,8 +243,8 @@ def create_nerf(args):
     embeddirs_fn = None
     if args.use_viewdirs:
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    # output_ch = 5 if args.N_importance > 0 else 4
-    output_ch = 3
+    output_ch = 5 if args.N_importance > 0 else 4
+    # output_ch = 3
     skips = [4]
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -303,7 +306,10 @@ def create_nerf(args):
         'white_bkgd': args.white_bkgd,
         'raw_noise_std': args.raw_noise_std,
         'epsilon': args.epsilon,
-        'fake_epsilon': args.fake_epsilon
+        'fake_epsilon': args.fake_epsilon,
+        'trans_epsilon': 0.15,
+        'enhanced_mode': False,
+        'enhanced_mode_modifier': 1.0,
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -318,9 +324,24 @@ def create_nerf(args):
 
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
+# def mix_imgs(img_div, img_org, img_new, w_org, w_new, fw_org, fw_new):
+#     h = img_div[:,:,0]
+#     l = img_div[:,:,1]
+#     s = img_div[:,:,2]
+#     ls = torch.where(s == 0, 255.0, l/s)
+#     mask = (s >= 50) & (0.5 < ls) & (ls < 3.0) & ((h <= 14) | (h >= 165))
+#     img_out = img_org
+#     img_out[~mask] = img_new[~mask]
+#     w_out=w_org
+#     w_out[~mask] = w_new[~mask]
+#     fw_out = fw_org
+#     fw_out[~mask] = fw_new[~mask]
+#     return img_out, w_out, fw_out
 
 def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False, alpha_overide=None,
-                fake_alpha=None):
+                trans_alpha=None,
+                fake_alpha=None,
+                enhanced_mode=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -336,6 +357,9 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
 
     dists = z_vals[..., 1:] - z_vals[..., :-1]
+    # print('dists.size() ', dists.size())
+    # print('dists[..., :1].shape ', dists[..., :1].shape)
+    # print('torch.Tensor([1e10]).expand(dists[..., :1].shape).size() ', torch.Tensor([1e10]).expand(dists[..., :1].shape).size())
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
@@ -343,10 +367,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
     noise = 0.
     if raw_noise_std > 0.:
-        if alpha_overide is None:
-            noise = torch.randn(raw[..., 3].shape) * raw_noise_std
-        else:
-            noise = torch.randn(alpha_overide.shape) * raw_noise_std
+        noise = torch.randn(raw[..., 3].shape) * raw_noise_std
 
         # Overwrite randomly sampled data if pytest
         if pytest:
@@ -357,31 +378,100 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     if alpha_overide is None:
         alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
     else:
-        alpha = alpha_overide
+        # if enhanced_mode:
+        #     alpha_org = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+        #     alpha = torch.maximum(alpha_org, alpha_overide)
+        # else:
+        #     alpha = alpha_overide
+
+        # if enhanced_mode:
+        #     alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+        # else:
+        #     alpha = alpha_overide
+
+        if enhanced_mode:
+            alpha_org = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+            alpha = torch.minimum(alpha_org, trans_alpha)
+        else:
+            alpha = alpha_overide
 
     if fake_alpha is None:
         fake_alpha = alpha
 
+    # if (fake_alpha is None) or enhanced_mode:
+    #     fake_alpha = alpha
+
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
-    fake_weights = fake_alpha * torch.cumprod(
-        torch.cat([torch.ones((fake_alpha.shape[0], 1)), 1. - fake_alpha + 1e-10], -1),
-        -1)[:, :-1]
+
+    fake_weights = alpha_org * torch.cumprod(
+        torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
+
+    # if enhanced_mode:
+    #     fake_weights = weights
+    # else:
+    #     fake_weights = fake_alpha * torch.cumprod(
+    #         torch.cat([torch.ones((fake_alpha.shape[0], 1)), 1. - fake_alpha + 1e-10], -1),-1)[:, :-1]
+
+    # weights_relu = alpha_overide * torch.cumprod(torch.cat([torch.ones((alpha_overide.shape[0], 1)), 1. - alpha_overide + 1e-10], -1), -1)[:, :-1]
+
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
+
+    # rgb_map_relu = torch.sum(weights_relu[..., None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = torch.sum(weights * z_vals, -1)
     disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
     acc_map = torch.sum(weights, -1)
+    # acc_map_relu = torch.sum(weights_relu, -1)
 
     if white_bkgd:
         rgb_map = rgb_map + (1. - acc_map[..., None])
+        # rgb_map_relu = rgb_map_relu + (1. - acc_map_relu[..., None])
+
+    # print('rgb_map ',rgb_map)
+    # print('rgb_map.size ', rgb_map.size())
+    # print('rgb_map_relu ', rgb_map_relu)
+    # print('rgb_map_relu.size ', rgb_map_relu.size())
+    #
+    # print('rgb_map[(rgb_map_relu >= 1.0).all(dim=1)] ', rgb_map[(rgb_map_relu >= 1.0).all(dim=1)])
+
+    # rgb_map[(rgb_map_relu >= 0.99).all(dim=1)] = 1.0
 
     return rgb_map, disp_map, acc_map, weights, fake_weights, depth_map
 
+def ray_triangle_intersection(ray_origin, ray_direction, vertices, traingles):
+
+    # print('trangle pre1 ',traingles)
+    # print('trangle pre2 ', traingles.dtype)
+    # print('trangle pre3 ', traingles.size())
+    traingles = traingles.to(torch.int64)
+    # print('trangle post1 ', traingles)
+    # print('trangle post2 ', traingles.dtype)
+    # print('trangle post3 ', traingles.size())
+
+    ray_direction = torch.nn.functional.normalize(ray_direction)
+    vertices=vertices[traingles]
+
+    normal = torch.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
+    normal = torch.nn.functional.normalize(normal)
+
+    distance_from_plane = torch.sum((vertices[:, 0] - ray_origin[:,None]) * normal, dim=-1) / torch.sum(ray_direction[:,None] * normal, dim=-1)
+    point_on_plane = ray_origin[:,None] + ray_direction[:,None] * distance_from_plane.unsqueeze(-1)
+
+    vertices = vertices - point_on_plane.unsqueeze(-2)
+
+    u = torch.cross(vertices[:, :, 0], vertices[:, :, 1])
+    v = torch.cross(vertices[:, :, 1], vertices[:, :, 2])
+    w = torch.cross(vertices[:, :, 2], vertices[:, :, 0])
+
+    is_in_triangle = torch.logical_and(torch.sum(u*v, dim=-1) >= 0, torch.sum(v*w, dim=-1) >= 0)
+    out = torch.where(is_in_triangle, distance_from_plane, 5.5)
+    out = torch.min(out, dim = -1)[0]
+    return out
 
 # PointFaceDistance
 
-_DEFAULT_MIN_TRIANGLE_AREA: float = 5e-4
+_DEFAULT_MIN_TRIANGLE_AREA: float = 1e-4
 
 
 class _PointFaceDistance(Function):
@@ -451,6 +541,66 @@ class _PointFaceDistance(Function):
 
 point_face_distance = _PointFaceDistance.apply
 
+# FacePointDistance
+class _FacePointDistance(Function):
+    """
+    Torch autograd Function wrapper FacePointDistance Cuda implementation
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        points,
+        points_first_idx,
+        tris,
+        tris_first_idx,
+        max_tris,
+        min_triangle_area=_DEFAULT_MIN_TRIANGLE_AREA,
+    ):
+        """
+        Args:
+            ctx: Context object used to calculate gradients.
+            points: FloatTensor of shape `(P, 3)`
+            points_first_idx: LongTensor of shape `(N,)` indicating the first point
+                index in each example in the batch
+            tris: FloatTensor of shape `(T, 3, 3)` of triangular faces. The `t`-th
+                triangular face is spanned by `(tris[t, 0], tris[t, 1], tris[t, 2])`
+            tris_first_idx: LongTensor of shape `(N,)` indicating the first face
+                index in each example in the batch
+            max_tris: Scalar equal to maximum number of faces in the batch
+            min_triangle_area: (float, defaulted) Triangles of area less than this
+                will be treated as points/lines.
+        Returns:
+            dists: FloatTensor of shape `(T,)`, where `dists[t]` is the squared
+                euclidean distance of `t`-th triangular face to the closest point in the
+                corresponding example in the batch
+            idxs: LongTensor of shape `(T,)` indicating the closest point in the
+                corresponding example in the batch.
+
+            `dists[t] = d(points[idxs[t]], tris[t, 0], tris[t, 1], tris[t, 2])`,
+            where `d(u, v0, v1, v2)` is the distance of point `u` from the triangular
+            face `(v0, v1, v2)`.
+        """
+        dists, idxs = _C.face_point_dist_forward(
+            points, points_first_idx, tris, tris_first_idx, max_tris, min_triangle_area
+        )
+        ctx.save_for_backward(points, tris, idxs)
+        ctx.min_triangle_area = min_triangle_area
+        return dists, idxs
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_dists):
+        grad_dists = grad_dists.contiguous()
+        points, tris, idxs = ctx.saved_tensors
+        min_triangle_area = ctx.min_triangle_area
+        grad_points, grad_tris = _C.face_point_dist_backward(
+            points, tris, idxs, grad_dists, min_triangle_area
+        )
+        return grad_points, None, grad_tris, None, None, None
+
+
+face_point_distance = _FacePointDistance.apply
 
 def point_mesh_face_distance(
         meshes: Meshes,
@@ -471,7 +621,7 @@ def point_mesh_face_distance(
     faces_packed = meshes.faces_packed()
     tris = verts_packed[faces_packed]  # (T, 3, 3)
     tris_first_idx = meshes.mesh_to_faces_packed_first_idx()
-    max_tris = meshes.num_faces_per_mesh().max().item()
+    # max_tris = meshes.num_faces_per_mesh().max().item()
 
     # point to face distance: shape (P,)
     point_to_face, idx = point_face_distance(
@@ -479,6 +629,34 @@ def point_mesh_face_distance(
     )
 
     return point_to_face, idx
+
+def mesh_face_point_distance(
+        meshes: Meshes,
+        pcls: Pointclouds,
+        min_triangle_area: float = _DEFAULT_MIN_TRIANGLE_AREA,
+):
+    if len(meshes) != len(pcls):
+        raise ValueError("meshes and pointclouds must be equal sized batches")
+    N = len(meshes)
+
+    # packed representation for pointclouds
+    points = pcls.points_packed()  # (P, 3)
+    points_first_idx = pcls.cloud_to_packed_first_idx()
+    max_points = pcls.num_points_per_cloud().max().item()
+
+    # packed representation for faces
+    verts_packed = meshes.verts_packed()
+    faces_packed = meshes.faces_packed()
+    tris = verts_packed[faces_packed]  # (T, 3, 3)
+    tris_first_idx = meshes.mesh_to_faces_packed_first_idx()
+    max_tris = meshes.num_faces_per_mesh().max().item()
+
+    # face to point distance: shape (T,)
+    face_to_point, idx = face_point_distance(
+        points, points_first_idx, tris, tris_first_idx, max_tris, min_triangle_area
+    )
+
+    return face_to_point, idx
 
 
 def distance_calculator(set_of_coordinates, mesh_points):
@@ -541,6 +719,28 @@ def FLAME_based_alpha_calculator_3_face_version(set_of_coordinates, mesh_points,
 
     return dists, idxs
 
+def FLAME_based_alpha_calculator_4_face_version_origin_calculator(origin, mesh_points, mesh_faces):
+    number_of_rays = origin.size(dim = 0)
+    number_of_ray_samples = mesh_faces.size(dim=1)
+
+    origin_list = torch.stack(list(torch.split(origin, 1, dim=0)), dim=0)
+    mesh_faces_list =  torch.stack(list(torch.split(mesh_faces, 1, dim=0)), dim=0)
+    # mesh_points_list = [mesh_points for _ in range(number_of_rays)]
+    mesh_points_list = mesh_points.unsqueeze(0).repeat(number_of_rays, 1, 1)
+
+    print('origin_list', origin_list.size())
+    print('mesh_faces_list', mesh_faces_list.size())
+    print('mesh_points_list', mesh_points_list.size())
+
+    p_mesh = Meshes(verts=mesh_points_list, faces=mesh_faces_list)
+    p_points = Pointclouds(points=origin_list)
+
+    dists, idxs = mesh_face_point_distance(p_mesh, p_points)
+    dists = torch.sqrt(dists)
+    dists, idxs = torch.reshape(dists, (number_of_rays, number_of_ray_samples)), \
+        torch.reshape(idxs, (number_of_rays, number_of_ray_samples))
+
+    return dists, idxs
 
 def distance_from_triangle(point, triangle):
     # Define vectors for triangle edges
@@ -605,17 +805,17 @@ def distance_point_to_line_segment(point, line_point1, line_point2):
                        torch.min(torch.norm(point - line_point1, dim=-1), torch.norm(point - line_point2, dim=-1)))
 
 
-def FLAME_based_alpha_calculator_4_face_version(set_of_coordinates, mesh_points, mesh_faces):
-    f_distances = torch.empty(set_of_coordinates.shape[0], set_of_coordinates.shape[1], mesh_faces.shape[0])
-    for i, points in enumerate(set_of_coordinates):
-        # Iterate through all the faces in the mesh
-        for j, point in enumerate(points):
-            for k, face in enumerate(mesh_faces):
-                # Get the coordinates of the triangle
-                triangle = mesh_points[face]
-                # Apply the distance function to the point and triangle
-                f_distances[i][j][k] = distance_from_triangle(point, triangle)
-    return f_distances
+# def FLAME_based_alpha_calculator_4_face_version(set_of_coordinates, mesh_points, mesh_faces):
+#     f_distances = torch.empty(set_of_coordinates.shape[0], set_of_coordinates.shape[1], mesh_faces.shape[0])
+#     for i, points in enumerate(set_of_coordinates):
+#         # Iterate through all the faces in the mesh
+#         for j, point in enumerate(points):
+#             for k, face in enumerate(mesh_faces):
+#                 # Get the coordinates of the triangle
+#                 triangle = mesh_points[face]
+#                 # Apply the distance function to the point and triangle
+#                 f_distances[i][j][k] = distance_from_triangle(point, triangle)
+#     return f_distances
 
 
 def FLAME_based_alpha_calculator_5_face_version(set_of_coordinates, mesh_points, mesh_faces, v_distances):
@@ -654,8 +854,11 @@ def render_rays(f_vert,
                 pytest=False,
                 epsilon=0.04,
                 fake_epsilon=0.06,
+                trans_epsilon=0.07,
                 trans_mat=None,
-                offset=None):
+                offset=None,
+                enhanced_mode=False,
+                enhanced_mode_modifier=1.0):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -691,6 +894,13 @@ def render_rays(f_vert,
     viewdirs = ray_batch[:, -3:] if ray_batch.shape[-1] > 8 else None
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
+    near_v, far_v = near[0, 0].item(), far[0, 0].item()
+
+    # if enhanced_mode:
+    #     epsilon = epsilon*enhanced_mode_modifier
+
+    if enhanced_mode:
+        trans_epsilon = trans_epsilon * enhanced_mode_modifier
 
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
@@ -716,14 +926,113 @@ def render_rays(f_vert,
 
         z_vals = lower + (upper - lower) * t_rand
 
+    # additional_points=21
+    # r=trans_epsilon
+    #
+    # predicded_distances = ray_triangle_intersection(rays_o, rays_d, f_vert, f_faces)
+    #
+    # values_range = torch.linspace(-2 * r, 2 * r, additional_points)
+    # values_range = torch.unsqueeze(values_range, 0)
+    #
+    # predicded_distances = torch.unsqueeze(predicded_distances, -1)
+    # predicded_distances_range = predicded_distances + values_range
+    #
+    # mask = torch.logical_or(predicded_distances_range >= 5.5, predicded_distances_range <= 3.0)
+    # rand_values = torch.rand(predicded_distances_range.size())* (5.5 - 3.0) + 3.0
+    # predicded_distances_range[mask] = rand_values[mask]
+    #
+    # z_vals = torch.cat((z_vals, predicded_distances_range), dim=1)
+    # z_vals = torch.sort(z_vals, dim=-1)[0]
+
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     m = torch.nn.ReLU()
-
     distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
+    best_points_number = 15
+    ok_points_number = 50
+    # print('distances_f ', distances_f)
+    best_vert, best_indexes = torch.topk(distances_f, best_points_number, dim=1, largest=False)
+    # print('best_vert ', best_vert)
+    ok_vert, ok_indexes = torch.topk(distances_f, ok_points_number, dim=1, largest=False)
+    # print('ok_vert ', ok_vert)
+    # print('closest_indexes.size() ', closest_indexes.size())
+    # print('closest_indexes ', closest_indexes)
+    #
+    # print('closest_vert.size() ', closest_vert.size())
+    # print('closest_vert ', closest_vert)
+    #
+    # print('z_vals.size() ', z_vals.size())
+    # print('z_vals ', z_vals)
+
+    best_vert_distances = torch.gather(z_vals, 1, best_indexes)
+
+    # z_vals = torch.gather(z_vals, 1, best_indexes)
+    # aditional_distances = z_vals[closest_indexes]
+
+    # print('chosen_distances.size() ', chosen_distances.size())
+    # print('chosen_distances ', chosen_distances)
+
+    # dist=0.25*trans_epsilon
+    dist_between_points = 0.33 * ((far_v - near_v) / (N_samples - 1))
+    # print('dist ', dist)
+    # t1 = aditional_distances + dist
+    # t2 = aditional_distances - dist
+    #
+    # print('t1.size() ', t1.size())
+    # print('t1 ', t1)
+    #
+    # print('t2.size() ', t2.size())
+    # print('t2 ', t2)
+    # t3=torch.cat((t1, t2), dim=1)
+    # print('t3.size() ', t3.size())
+    # print('t3 ', t3)
+    aditional_distances = torch.cat((best_vert_distances - dist_between_points, best_vert_distances + dist_between_points), dim=1)
+
+
+
+    # print('aditional_distances.size() ', aditional_distances.size())
+    # print('aditional_distances ', aditional_distances)
+
+    # selected_closet_triangles = torch.gather(idx_f, 1, closest_indexes)
+    #
+    # selected_pedictions, selected_pedictions_idx = FLAME_based_alpha_calculator_4_face_version_origin_calculator(rays_o, f_vert, selected_closet_triangles)
+
+    aditional_pts = rays_o[..., None, :] + rays_d[..., None, :] * aditional_distances[..., :, None]  # [N_rays, N_samples, 3]
+    aditional_distances_f, aditional_idx_f = FLAME_based_alpha_calculator_3_face_version(aditional_pts, f_vert, f_faces)
+
+    # print('pts.size() ', pts.size())
+    # print('distances_f.size() ', distances_f.size())
+    # print('pts.size() ', pts.size())
+    # print('ok_indexes.size() ', ok_indexes.size())
+
+    # print('z_vals.size() ', z_vals.size())
+    # wtf?
+    pts = torch.gather(pts, 1, ok_indexes.unsqueeze(2).expand(-1, -1, pts.size(2)))
+    distances_f = torch.gather(distances_f, 1, ok_indexes)
+    idx_f = torch.gather(idx_f, 1, ok_indexes)
+    z_vals = torch.gather(z_vals, 1, ok_indexes)
+    # print('z_vals.size() ', z_vals.size())
+    pts = torch.cat((pts, aditional_pts), dim=1)
+    distances_f = torch.cat((distances_f, aditional_distances_f), dim=1)
+    idx_f = torch.cat((idx_f, aditional_idx_f), dim=1)
+    z_vals = torch.cat((z_vals, aditional_distances), dim=1)
+    # print('z_vals.size() ', z_vals.size())
+    z_vals, z_vals_sorted_indexes = torch.sort(z_vals, dim=1)
+
+    pts = torch.gather(pts, 1, z_vals_sorted_indexes.unsqueeze(2).expand(-1, -1, pts.size(2)))
+    distances_f = torch.gather(distances_f, 1, z_vals_sorted_indexes)
+    idx_f = torch.gather(idx_f, 1, z_vals_sorted_indexes)
+    # print('z_vals.size() ', z_vals.size())
+    # print('pts.size() ', pts.size())
+    # print('distances_f.size() ', distances_f.size())
 
     alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon)
     fake_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, fake_epsilon)
+    trans_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, trans_epsilon)
+
+    # if enhanced_mode:
+    #     alpha = alpha * enhanced_mode_modifier
+    #     fake_alpha = fake_alpha * enhanced_mode_modifier
 
     if offset is not None:
         pts += offset
@@ -734,10 +1043,14 @@ def render_rays(f_vert,
 
     # raw = run_network(pts)
     raw = network_query_fn(pts, viewdirs, network_fn)
+    # print('raw.size() ', raw.size())
+    # print('z_vals.size() ', z_vals.size())
     rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std,
                                                                                white_bkgd,
                                                                                pytest=pytest, alpha_overide=alpha,
-                                                                               fake_alpha=fake_alpha)
+                                                                               fake_alpha=fake_alpha,
+                                                                               trans_alpha=trans_alpha,
+                                                                               enhanced_mode=enhanced_mode)
 
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
@@ -752,6 +1065,7 @@ def render_rays(f_vert,
 
         distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
         alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, epsilon)
+        trans_alpha = FLAME_based_alpha_calculator_f_relu(distances_f, m, trans_epsilon)
 
         run_fn = network_fn if network_fine is None else network_fine
 
@@ -767,7 +1081,9 @@ def render_rays(f_vert,
 
         rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std,
                                                                                    white_bkgd,
-                                                                                   pytest=pytest, alpha_overide=alpha)
+                                                                                   pytest=pytest, alpha_overide=alpha,
+                                                                                   trans_alpha=trans_alpha,
+                                                                                   enhanced_mode=enhanced_mode)
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
     if retraw:
@@ -1033,9 +1349,16 @@ def recover_homogenous_affine_transformation(p, p_prime):
     Q = p[:, 1:, :] - p[:, 0:1, :]
     Q_prime = p_prime[:, 1:, :] - p_prime[:, 0:1, :]
 
+    # # move tensors to CPU
+    # Q = Q.cpu()
+    # Q_prime = Q_prime.cpu()
+
     # calculate rotation matrix
     R = torch.inverse(torch.cat((Q, torch.cross(Q[:, 0, :], Q[:, 1, :], dim=1).unsqueeze(1)), dim=1)) @ \
         torch.cat((Q_prime, torch.cross(Q_prime[:, 0, :], Q_prime[:, 1, :], dim=1).unsqueeze(1)), dim=1)
+
+    # # move R back to the original device
+    # R = R.to(device)
 
     # calculate translation vector
     t = p_prime[:, 0, :] - torch.einsum("ik,ikj->ij", p[:, 0, :], R)
@@ -1091,11 +1414,11 @@ def train():
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
-        near = 2.
-        far = 6.
+        # near = 2.
+        # far = 6.
 
-        # near = 3.
-        # far = 5.5
+        near = 3.
+        far = 5.5
 
         if args.white_bkgd:
             images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
@@ -1149,6 +1472,7 @@ def train():
     # Create log dir and copy the config file
     basedir = args.basedir
     expname = args.expname
+    print('experiment name: ' + expname)
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
     f = os.path.join(basedir, expname, 'args.txt')
     with open(f, 'w') as file:
@@ -1161,8 +1485,8 @@ def train():
             file.write(open(args.config, 'r').read())
 
     flamelayer = FLAME(args).to(device)
-    f_shape = nn.Parameter(torch.zeros(1, 100).float().to(device))
-    f_exp = nn.Parameter(torch.zeros(1, 50).float().to(device))
+    f_shape = nn.Parameter(torch.zeros(1, args.shape_params).float().to(device))
+    f_exp = nn.Parameter(torch.zeros(1, args.expression_params).float().to(device))
     f_pose = nn.Parameter(torch.zeros(1, 6).float().to(device))
     f_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
     f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
@@ -1214,10 +1538,15 @@ def train():
     faces = torch.tensor(faces.astype(np.int32))
     faces = torch.squeeze(faces)
     faces = faces.cuda()
-
+    # print("face_data1 ", faces)
+    # print("face_data2 ", faces.dtype)
+    # print("face_data3 ", faces.size())
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
+
+    for param_group in f_opt.param_groups:
+        param_group['lr'] = args.lrate
 
     bds_dict = {
         'near': near,
@@ -1310,214 +1639,6 @@ def train():
             #             fp.write('%s %f\n' % (s, v))
             #     # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
 
-            # ---
-
-            # other_ckpt_path = os.path.join(basedir, expname, 'other', 'other_ckpt.tar')
-            # other_ckpt = torch.load(other_ckpt_path)
-            # f_shape_other = other_ckpt['f_shape'].to(device)
-            # f_exp_other = other_ckpt['f_exp'].to(device)
-            #
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_exp_trans_2_{}_{:06d}'.format('test' if args.render_test else 'path', start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # vertice_out, _ = flamelayer(f_shape_other, f_exp_other, f_pose, neck_pose=f_neck_pose, transl=f_trans)
-            # vertice_out = torch.squeeze(vertice_out)
-            # # outmesh_dir = './output/t_face_4_8'
-            # # safe_mkdir(outmesh_dir)
-            # outmesh_path = os.path.join(testsavedir, 'face.obj')
-            #
-            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
-            #
-            # print('test poses shape', render_poses.shape)
-            #
-            # vertice_out = vertice_out[:, [0, 2, 1]]
-            # vertice_out[:, 1] = -vertice_out[:, 1]
-            # vertice_out *= 8
-            #
-            # # print("faces -1 ",faces.long() - 1)
-            # # print("faces +0 ", faces.long() )
-            # # print("faces +1 ", faces.long() + 1)
-            #
-            # triangles_org = vertice[faces.long(), :]
-            # triangles_out = vertice_out[faces.long(), :]
-            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
-            #                       gt_imgs=images,
-            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            # render_kwargs_test['trans_mat'] = None
-            # print('Done rendering', testsavedir)
-            #
-            # if images is None:
-            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-
-            # ---
-
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_mouth_animate_{}_{:06d}'.format(
-            #                                'test' if args.render_test else 'path',
-            #                                start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # f_pose_rot = f_pose.clone().detach()
-            #
-            # start_setting = f_pose[0, 3]
-            # end_setting = start_setting + 15.0 * radian
-            #
-            # progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
-            # progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
-            # progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
-            #
-            # # print('progres_settings ', progres_settings)
-            #
-            # all_verticles_l = []
-            #
-            # for setting in progres_settings:
-            #     f_pose_rot[0, 3] = setting
-            #     vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
-            #     vertice_out = torch.squeeze(vertice_out)
-            #
-            #     vertice_out = vertice_out[:, [0, 2, 1]]
-            #     vertice_out[:, 1] = -vertice_out[:, 1]
-            #     vertice_out *= 8
-            #
-            #     all_verticles_l.append(vertice_out)
-            #     # print('all_verticles_l ', all_verticles_l.shape)
-            #     # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
-            #
-            # all_verticles = torch.stack(all_verticles_l)
-            #
-            # print('Start rendering', testsavedir)
-            #
-            # rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
-            #                          render_kwargs_test,
-            #                          gt_imgs=None,
-            #                          savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            #
-            # print('Done rendering', testsavedir)
-            #
-            # imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-
-            # ---
-
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_neck_animate_{}_{:06d}'.format(
-            #                                'test' if args.render_test else 'path',
-            #                                start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # f_neck_pose_rot = f_neck_pose.clone().detach()
-            #
-            # start_setting = f_neck_pose[0, 1]
-            # end_setting = start_setting + 20.0 * radian
-            #
-            # progres_settings_forwards = torch.linspace(start_setting.item(), end_setting.item(), steps=40)
-            # progres_settings_backwards = torch.linspace(end_setting.item(), start_setting.item(), steps=40)
-            # progres_settings = torch.cat((progres_settings_forwards, progres_settings_backwards))
-            #
-            # # print('progres_settings ', progres_settings)
-            #
-            # all_verticles_l = []
-            #
-            # for setting in progres_settings:
-            #     f_neck_pose_rot[0, 1] = setting
-            #     vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
-            #     vertice_out = torch.squeeze(vertice_out)
-            #
-            #     vertice_out = vertice_out[:, [0, 2, 1]]
-            #     vertice_out[:, 1] = -vertice_out[:, 1]
-            #     vertice_out *= 8
-            #
-            #     all_verticles_l.append(vertice_out)
-            #     # print('all_verticles_l ', all_verticles_l.shape)
-            #     # all_verticles = torch.cat((all_verticles, vertice_out),dim=-1)
-            #
-            # all_verticles = torch.stack(all_verticles_l)
-            #
-            # print('Start rendering', testsavedir)
-            #
-            # rgbs, _ = render_animate(vertice, all_verticles, faces, render_poses[-3], hwf, K, args.chunk_render,
-            #                          render_kwargs_test,
-            #                          gt_imgs=None,
-            #                          savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            #
-            # print('Done rendering', testsavedir)
-            #
-            # imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-
-            # ---
-
-            # f_pose_rot = f_pose.clone().detach()
-            # f_pose_rot[0, 3] = 10.0 * radian
-            #
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_mouth_{}_{:06d}'.format('test' if args.render_test else 'path', start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
-            # vertice_out = torch.squeeze(vertice_out)
-            # # outmesh_dir = './output/t_face_4_8'
-            # # safe_mkdir(outmesh_dir)
-            # outmesh_path = os.path.join(testsavedir, 'face.obj')
-            #
-            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
-            #
-            # print('test poses shape', render_poses.shape)
-            #
-            # vertice_out = vertice_out[:, [0, 2, 1]]
-            # vertice_out[:, 1] = -vertice_out[:, 1]
-            # vertice_out *= 8
-            #
-            # # print("faces -1 ",faces.long() - 1)
-            # # print("faces +0 ", faces.long() )
-            # # print("faces +1 ", faces.long() + 1)
-            #
-            # triangles_org = vertice[faces.long(), :]
-            # triangles_out = vertice_out[faces.long(), :]
-            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
-            #                       gt_imgs=images,
-            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            # render_kwargs_test['trans_mat'] = None
-            # print('Done rendering', testsavedir)
-            #
-            # if images is None:
-            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-
-            # ---
-
-            # f_neck_pose_rot=nn.Parameter(torch.zeros(1, 3).float().to(device))
-            # f_neck_pose_rot[0, 1] = 20.0 * radian
-            #
-            # testsavedir = os.path.join(basedir, expname,
-            #                            'renderonly_rot_neck_{}_{:06d}'.format('test' if args.render_test else 'path', start))
-            # os.makedirs(testsavedir, exist_ok=True)
-            #
-            # vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose_rot, transl=f_trans)
-            # vertice_out = torch.squeeze(vertice_out)
-            # # outmesh_dir = './output/t_face_4_8'
-            # # safe_mkdir(outmesh_dir)
-            # outmesh_path = os.path.join(testsavedir, 'face.obj')
-            #
-            # write_simple_obj(mesh_v=vertice_out.cpu().numpy(), mesh_f=flamelayer.faces, filepath=outmesh_path)
-            #
-            # print('test poses shape', render_poses.shape)
-            #
-            # vertice_out = vertice_out[:, [0, 2, 1]]
-            # vertice_out[:, 1] = -vertice_out[:, 1]
-            # vertice_out *= 8
-            #
-            # triangles_org = vertice[faces.long(), :]
-            # triangles_out = vertice_out[faces.long(), :]
-            # render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-            # rgbs, _ = render_path(vertice_out, faces, render_poses, hwf, K, args.chunk_render, render_kwargs_test,
-            #                       gt_imgs=images,
-            #                       savedir=testsavedir, render_factor=args.render_factor, offset=f_trans)
-            # render_kwargs_test['trans_mat'] = None
-            # print('Done rendering', testsavedir)
-            #
-            # if images is None:
-            #     imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
             return
 
     # Prepare raybatch tensor if batching random rays
@@ -1539,9 +1660,9 @@ def train():
         print('done')
         i_batch = 0
 
-    # current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    # train_log_dir = 'logs/tensorboard_logs/' + expname + '/' + current_time
-    # train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = basedir + '/' + expname + '/tensorboard_logs/' + '/' + current_time
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
     # Move training data to GPU
     if use_batching:
@@ -1550,22 +1671,36 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    # N_iters = 100000 + 1
     # N_iters = 200000 + 1
+    N_iters = 150000 + 1
+    # N_iters = 100000 + 1
+    # N_iters = 70000 + 1
     # N_iters = 50000 + 1
-    N_iters = 40000 + 1
+    # N_iters = 40000 + 1
     # N_iters = 20000 + 1
+
+    grad = 1.0
+    grad_min_val = 0.05
+    N_iters_enhanced_mode_start = 0 + 1
+    N_iters_enhanced_mode_end = 150000 + 1
+
+    enhanced_mode = False
 
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
-
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
 
     start = start + 1
     for i in trange(start, N_iters):
+
+        if i >= N_iters_enhanced_mode_start:
+            enhanced_mode = True
+            render_kwargs_train['enhanced_mode'] = True
+            render_kwargs_test['enhanced_mode'] = True
+
         time0 = time.time()
 
         # Sample random ray batch
@@ -1627,6 +1762,9 @@ def train():
         vertice[:, 1] = -vertice[:, 1]
         vertice *= 8
 
+        render_kwargs_train['enhanced_mode_modifier'] = grad
+        render_kwargs_test['enhanced_mode_modifier'] = grad
+
         rgb_f, disp_f, acc_f, extras_f = render(vertice, faces, H, W, K, chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True, offset=f_trans,
                                                 **render_kwargs_train)
@@ -1647,6 +1785,7 @@ def train():
         loss.backward()
 
         f_opt.step()
+
         optimizer.step()
 
         # NOTE: IMPORTANT!
@@ -1656,12 +1795,19 @@ def train():
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate
+
+        for param_group in f_opt.param_groups:
+            param_group['lr'] = new_lrate
         ################################
 
         dt = time.time() - time0
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
         torch.cuda.empty_cache()
+
+        if enhanced_mode and i < N_iters_enhanced_mode_end:
+            grad = grad_min_val + (1.0 - grad_min_val) * ( 1-(i-N_iters_enhanced_mode_start)/(N_iters_enhanced_mode_end-N_iters_enhanced_mode_start))
+
         # Rest is logging
         if i % args.i_weights == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
@@ -1709,69 +1855,141 @@ def train():
 
                 print('test poses shape', poses[i_test].shape)
 
-                render_path(vertice, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+                rgbs, _ = render_path(vertice, faces, poses[i_test], hwf, K, args.chunk_render,
                             render_kwargs_test,
                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor,
                             offset=f_trans)
+
+                images_o = torch.tensor(images[i_test]).to(device=device, dtype=torch.float)
+                rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+
+                images_o = torch.movedim(images_o, 3, 1)
+                rgbs = torch.movedim(rgbs, 3, 1)
+
+                psnr_f = PeakSignalNoiseRatio()
+                img_psnr_1 = psnr_f(rgbs, images_o)
+
+                img_loss = img2mse(rgbs, images_o)
+
+                ssim_f = StructuralSimilarityIndexMeasure()
+                img_ssim = ssim_f(rgbs, images_o)
+
+                lpips_f = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+                img_lpips = lpips_f(rgbs, images_o)
+
+                print("img_loss", img_loss)
+                print("img_psnr_1", img_psnr_1)
+                print("img_ssim", img_ssim)
+                print("img_lpips", img_lpips)
+
+                outstats_path = os.path.join(testsavedir, 'stats.txt')
+                with open(outstats_path, 'w') as fp:
+                    for s, v in {"img_loss": img_loss, "img_psnr": img_psnr_1, "img_ssim": img_ssim,
+                                 "img_lpips": img_lpips}.items():
+                        fp.write('%s %f\n' % (s, v))
+                # torch.save({"img_loss": img_loss, "img_psnr": img_psnr_2, "img_ssim": img_ssim, "img_lpips": img_lpips}, outstats_path)
+
             print('Saved test set')
 
-        # if i % args.i_testset == 0 and i > 0:
-        #     testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot1'.format(i))
-        #     os.makedirs(testsavedir, exist_ok=True)
-        #     radian = np.pi / 180.0
-        #     with torch.no_grad():
-        #         f_pose_rot = f_pose.clone().detach()
-        #         f_pose_rot[0, 3] = 10.0 * radian
-        #
-        #         vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
-        #         vertice_out = torch.squeeze(vertice_out)
-        #
-        #         outmesh_path = os.path.join(testsavedir, 'face.obj')
-        #         write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces,
-        #                          filepath=outmesh_path)
-        #
-        #         vertice_out = vertice_out[:, [0, 2, 1]]
-        #         vertice_out[:, 1] = -vertice_out[:, 1]
-        #         vertice_out *= 8
-        #
-        #         print('test poses shape', poses[i_test].shape)
-        #         triangles_org = vertice[faces.long(), :]
-        #         triangles_out = vertice_out[faces.long(), :]
-        #         render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-        #         render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
-        #                     render_kwargs_test,
-        #                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
-        #         render_kwargs_test['trans_mat'] = None
-        #     print('Saved test set')
+        if i % args.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot1'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
+                vertice = torch.squeeze(vertice)
 
-        # if i % args.i_testset == 0 and i > 0:
-        #     testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot2'.format(i))
-        #     os.makedirs(testsavedir, exist_ok=True)
-        #     radian = np.pi / 180.0
-        #     with torch.no_grad():
-        #         out_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
-        #         out_neck_pose[0, 1] = 20.0 * radian
+                vertice = vertice[:, [0, 2, 1]]
+                vertice[:, 1] = -vertice[:, 1]
+                vertice *= 8
+
+                f_pose_rot = f_pose.clone().detach()
+                f_pose_rot[0, 3] = 10.0 * radian
+
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose_rot, neck_pose=f_neck_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces,
+                                 filepath=outmesh_path)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[faces.long(), :]
+                triangles_out = vertice_out[faces.long(), :]
+
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                render_path(vertice_out, faces, poses[i_test], hwf, K, args.chunk_render,
+                            render_kwargs_test,
+                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor,
+                            offset=f_trans)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
+
+        if i % args.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot2'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                out_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
+                out_neck_pose[0, 1] = 20.0 * radian
+
+                vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=out_neck_pose, transl=f_trans)
+                vertice_out = torch.squeeze(vertice_out)
+
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces,
+                                 filepath=outmesh_path)
+
+                vertice_out = vertice_out[:, [0, 2, 1]]
+                vertice_out[:, 1] = -vertice_out[:, 1]
+                vertice_out *= 8
+
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[faces.long(), :]
+                triangles_out = vertice_out[faces.long(), :]
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+                            render_kwargs_test,
+                            gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor,
+                            offset=f_trans)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
+
+        # if i % 10000 == 0 and i >= 100000:
+        #     for j in range(1, 5):
+        #         testsavedir = os.path.join(basedir, expname, 'testset_f_{:06d}_rot3_rand_{:06d}'.format(i,j))
+        #         os.makedirs(testsavedir, exist_ok=True)
+        #         radian = np.pi / 180.0
+        #         with torch.no_grad():
         #
-        #         vertice_out, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=out_neck_pose, transl=f_trans)
-        #         vertice_out = torch.squeeze(vertice_out)
+        #             out_f_exp = nn.Parameter(((torch.rand(1, args.expression_params).float().to(device) * 1.0) + 0.5) * f_exp)
         #
-        #         outmesh_path = os.path.join(testsavedir, 'face.obj')
-        #         write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces,
-        #                          filepath=outmesh_path)
         #
-        #         vertice_out = vertice_out[:, [0, 2, 1]]
-        #         vertice_out[:, 1] = -vertice_out[:, 1]
-        #         vertice_out *= 8
+        #             vertice_out, _ = flamelayer(f_shape, out_f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
+        #             vertice_out = torch.squeeze(vertice_out)
         #
-        #         print('test poses shape', poses[i_test].shape)
-        #         triangles_org = vertice[faces.long(), :]
-        #         triangles_out = vertice_out[faces.long(), :]
-        #         render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-        #         render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
-        #                     render_kwargs_test,
-        #                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor)
-        #         render_kwargs_test['trans_mat'] = None
-        #     print('Saved test set')
+        #             outmesh_path = os.path.join(testsavedir, 'face.obj')
+        #             write_simple_obj(mesh_v=vertice_out.detach().cpu().numpy(), mesh_f=flamelayer.faces,
+        #                              filepath=outmesh_path)
+        #
+        #             vertice_out = vertice_out[:, [0, 2, 1]]
+        #             vertice_out[:, 1] = -vertice_out[:, 1]
+        #             vertice_out *= 8
+        #
+        #             print('test poses shape', poses[i_test].shape)
+        #             triangles_org = vertice[faces.long(), :]
+        #             triangles_out = vertice_out[faces.long(), :]
+        #             render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+        #             render_path(vertice_out, faces, torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk_render,
+        #                         render_kwargs_test,
+        #                         gt_imgs=images[i_test], savedir=testsavedir, render_factor=args.render_factor,
+        #                         offset=f_trans)
+        #             render_kwargs_test['trans_mat'] = None
+        #         print('Saved test set')
 
         torch.cuda.empty_cache()
         if i % args.i_video == 0 and i > 0:
@@ -1789,11 +2007,14 @@ def train():
             #         rgbs_still, _ = render_path(vertice, faces,, render_poses, hwf, args.chunk_render, render_kwargs_test)
             #     render_kwargs_test['c2w_staticcam'] = None
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
+
+
         torch.cuda.empty_cache()
 
-        # with train_summary_writer.as_default():
-        #     tf.summary.scalar('loss', data=loss.item(), step=global_step)
-        #     tf.summary.scalar('psnr', data=psnr.item(), step=global_step)
+        with train_summary_writer.as_default():
+            tf.summary.scalar('loss', data=loss.item(), step=global_step)
+            tf.summary.scalar('psnr', data=psnr.item(), step=global_step)
+            tf.summary.scalar('grad', data=grad, step=global_step)
 
         if i % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
