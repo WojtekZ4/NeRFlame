@@ -307,9 +307,12 @@ def create_nerf(args):
         'raw_noise_std': args.raw_noise_std,
         'epsilon': args.epsilon,
         'fake_epsilon': args.fake_epsilon,
-        'trans_epsilon': 0.15,
+        'trans_epsilon': args.trans_epsilon_start,
         'enhanced_mode': False,
         'enhanced_mode_modifier': 1.0,
+        'N_ok_points': args.N_ok_points,
+        'N_great_points': args.N_great_points,
+        'N_additional_points': args.N_additional_points,
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -858,7 +861,10 @@ def render_rays(f_vert,
                 trans_mat=None,
                 offset=None,
                 enhanced_mode=False,
-                enhanced_mode_modifier=1.0):
+                enhanced_mode_modifier=1.0,
+                N_ok_points=50,
+                N_great_points=10,
+                N_additional_points=10):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -899,8 +905,8 @@ def render_rays(f_vert,
     # if enhanced_mode:
     #     epsilon = epsilon*enhanced_mode_modifier
 
-    if enhanced_mode:
-        trans_epsilon = trans_epsilon * enhanced_mode_modifier
+    # if enhanced_mode:
+    #     trans_epsilon = trans_epsilon * enhanced_mode_modifier
 
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
@@ -948,12 +954,13 @@ def render_rays(f_vert,
 
     m = torch.nn.ReLU()
     distances_f, idx_f = FLAME_based_alpha_calculator_3_face_version(pts, f_vert, f_faces)
-    best_points_number = 15
-    ok_points_number = 50
+    # best_points_number = 10
+    # ok_points_number = 50
+    # new_points_number = 5
     # print('distances_f ', distances_f)
-    best_vert, best_indexes = torch.topk(distances_f, best_points_number, dim=1, largest=False)
+    best_vert, best_indexes = torch.topk(distances_f, N_great_points, dim=1, largest=False)
     # print('best_vert ', best_vert)
-    ok_vert, ok_indexes = torch.topk(distances_f, ok_points_number, dim=1, largest=False)
+    ok_vert, ok_indexes = torch.topk(distances_f, N_ok_points, dim=1, largest=False)
     # print('ok_vert ', ok_vert)
     # print('closest_indexes.size() ', closest_indexes.size())
     # print('closest_indexes ', closest_indexes)
@@ -973,20 +980,22 @@ def render_rays(f_vert,
     # print('chosen_distances ', chosen_distances)
 
     # dist=0.25*trans_epsilon
-    dist_between_points = 0.33 * ((far_v - near_v) / (N_samples - 1))
-    # print('dist ', dist)
-    # t1 = aditional_distances + dist
-    # t2 = aditional_distances - dist
-    #
-    # print('t1.size() ', t1.size())
-    # print('t1 ', t1)
-    #
-    # print('t2.size() ', t2.size())
-    # print('t2 ', t2)
-    # t3=torch.cat((t1, t2), dim=1)
-    # print('t3.size() ', t3.size())
-    # print('t3 ', t3)
-    aditional_distances = torch.cat((best_vert_distances - dist_between_points, best_vert_distances + dist_between_points), dim=1)
+    dist_between_points = ((far_v - near_v) / (N_samples - 1))
+
+    expanded_tensor = best_vert_distances.unsqueeze(2).expand(best_vert_distances.shape[0],
+                                                              best_vert_distances.shape[1],
+                                                              N_additional_points - 1)
+
+    step_tensor = torch.linspace(-dist_between_points * 0.5,
+                                 dist_between_points * 0.5,
+                                 N_additional_points)[ :-1]
+
+    aditional_distances = expanded_tensor + step_tensor
+
+    aditional_distances = aditional_distances.reshape(best_vert_distances.shape[0], -1)
+
+    # aditional_distances = torch.cat((best_vert_distances - 0.33 * dist_between_points,
+    #                                  best_vert_distances + 0.33 * dist_between_points), dim=1)
 
 
 
@@ -1011,12 +1020,12 @@ def render_rays(f_vert,
     distances_f = torch.gather(distances_f, 1, ok_indexes)
     idx_f = torch.gather(idx_f, 1, ok_indexes)
     z_vals = torch.gather(z_vals, 1, ok_indexes)
-    # print('z_vals.size() ', z_vals.size())
+
     pts = torch.cat((pts, aditional_pts), dim=1)
     distances_f = torch.cat((distances_f, aditional_distances_f), dim=1)
     idx_f = torch.cat((idx_f, aditional_idx_f), dim=1)
     z_vals = torch.cat((z_vals, aditional_distances), dim=1)
-    # print('z_vals.size() ', z_vals.size())
+
     z_vals, z_vals_sorted_indexes = torch.sort(z_vals, dim=1)
 
     pts = torch.gather(pts, 1, z_vals_sorted_indexes.unsqueeze(2).expand(-1, -1, pts.size(2)))
@@ -1216,6 +1225,12 @@ def config_parser():
 
     parser.add_argument("--epsilon", type=float, default=0.04)
     parser.add_argument("--fake_epsilon", type=float, default=0.06)
+    parser.add_argument("--trans_epsilon_start", type=float, default=0.15)
+    parser.add_argument("--trans_epsilon_end", type=float, default=0.01)
+
+    parser.add_argument("--N_ok_points", type=int, default=50)
+    parser.add_argument("--N_great_points", type=int, default=10)
+    parser.add_argument("--N_additional_points", type=int, default=10)
 
     parser.add_argument(
         '--flame_model_path',
@@ -1525,6 +1540,7 @@ def train():
         f_trans = ckpt['f_trans'].to(device)
         args.epsilon = ckpt['epsilon']
         args.fake_epsilon = ckpt['fake_epsilon']
+        args.trans_epsilon_start = ckpt['trans_epsilon']
 
     vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
     vertice = torch.squeeze(vertice)
@@ -1680,9 +1696,9 @@ def train():
     # N_iters = 20000 + 1
 
     grad = 1.0
-    grad_min_val = 0.05
+    grad_min_val = args.trans_epsilon_end / args.trans_epsilon_start
     N_iters_enhanced_mode_start = 0 + 1
-    N_iters_enhanced_mode_end = 150000 + 1
+    N_iters_enhanced_mode_end = N_iters
 
     enhanced_mode = False
 
@@ -1700,6 +1716,9 @@ def train():
             enhanced_mode = True
             render_kwargs_train['enhanced_mode'] = True
             render_kwargs_test['enhanced_mode'] = True
+
+        if enhanced_mode and i < N_iters_enhanced_mode_end:
+            grad = grad_min_val + (1.0 - grad_min_val) * ( 1-(i-N_iters_enhanced_mode_start)/(N_iters_enhanced_mode_end-N_iters_enhanced_mode_start))
 
         time0 = time.time()
 
@@ -1764,6 +1783,8 @@ def train():
 
         render_kwargs_train['enhanced_mode_modifier'] = grad
         render_kwargs_test['enhanced_mode_modifier'] = grad
+        render_kwargs_train['trans_epsilon'] = args.trans_epsilon_start * grad
+        render_kwargs_test['trans_epsilon'] = args.trans_epsilon_start * grad
 
         rgb_f, disp_f, acc_f, extras_f = render(vertice, faces, H, W, K, chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True, offset=f_trans,
@@ -1805,8 +1826,6 @@ def train():
         #####           end            #####
         torch.cuda.empty_cache()
 
-        if enhanced_mode and i < N_iters_enhanced_mode_end:
-            grad = grad_min_val + (1.0 - grad_min_val) * ( 1-(i-N_iters_enhanced_mode_start)/(N_iters_enhanced_mode_end-N_iters_enhanced_mode_start))
 
         # Rest is logging
         if i % args.i_weights == 0:
@@ -1824,6 +1843,7 @@ def train():
                     'f_neck_pose': f_neck_pose,
                     'epsilon': render_kwargs_test['epsilon'],
                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
+                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
                 }, path)
             else:
                 torch.save({
@@ -1839,6 +1859,7 @@ def train():
                     'f_neck_pose': f_neck_pose,
                     'epsilon': render_kwargs_test['epsilon'],
                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
+                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
                 }, path)
             print('Saved checkpoints at', path)
 
