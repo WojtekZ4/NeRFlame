@@ -1,4 +1,4 @@
-expname = face_M1000_N
+expname = face_M1000_N_1_e0016_tr_eps_015_00075_smart_sampling_test_1_smarter_aproach_ok_60_top_10
 basedir = ./logs
 datadir = ./data/face_scan/face_M1000_N
 dataset_type = blender
@@ -11,14 +11,20 @@ factor = 8
 llffhold = 8
 
 N_rand = 1024
-N_samples = 140
-N_importance = 140
+N_samples = 110
+N_importance = 50
 
 lrate=0.001
 lrate_decay=750
 
 epsilon=0.016
 fake_epsilon=0.04
+
+trans_epsilon_start=0.15
+trans_epsilon_end=0.005
+N_ok_points=60
+N_great_points=10
+N_additional_points=10
 
 perturb=1
 netdepth=8
@@ -37,5 +43,5 @@ chunk_render=16384
 
 i_embed=0
 
-i_video=10000
+i_video=500000
 i_testset=10000
