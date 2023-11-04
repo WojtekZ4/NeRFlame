@@ -286,7 +286,7 @@ def render_rays(
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
 
-    rgb_map, disp_map, acc_map, weights, depth_map, z_vals, weights, raw = trainer.sample_main_points(
+    rgb_map, disp_map, acc_map, weights, depth_map, z_vals, _weights, raw = trainer.sample_main_points(
         near=near,
         far=far,
         perturb=perturb,
@@ -306,7 +306,7 @@ def render_rays(
 
     rgb_map_0, disp_map_0, acc_map_0, rgb_map, disp_map, acc_map, raw_0, z_samples = trainer.sample_points(
         z_vals=z_vals,
-        weights=weights,
+        weights=_weights,
         perturb=perturb,
         pytest=pytest,
         rays_o=rays_o,

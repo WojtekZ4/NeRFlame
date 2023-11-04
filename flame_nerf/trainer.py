@@ -55,7 +55,7 @@ class FlameTrainer(Trainer):
         self.n_the_farthest_samples = n_the_farthest_samples
         self.n_central_samples = n_central_samples
         self.n_additional_samples = n_additional_samples
-        self.enhanced_mode = False
+        self.enhanced_mode = True
         self.chunk_render = chunk_render
 
         super().__init__(
@@ -277,7 +277,7 @@ class FlameTrainer(Trainer):
             trans_alpha=trans_alpha,
         )
 
-        return rgb_map, disp_map, acc_map, weights, depth_map, z_vals, weights, raw
+        return rgb_map, disp_map, acc_map, weights, depth_map, z_vals, fake_weights, raw
 
     def raw2outputs(
             self,
@@ -304,8 +304,9 @@ class FlameTrainer(Trainer):
 
         alpha_overide = kwargs["alpha_overide"]
         trans_alpha = kwargs["trans_alpha"]
-        # fake_alpha = kwargs["fake_alpha"]
+        fake_alpha = kwargs["fake_alpha"]
         enhanced_mode = self.enhanced_mode
+        alpha_org = None
 
         raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
 
@@ -335,12 +336,15 @@ class FlameTrainer(Trainer):
             else:
                 alpha = alpha_overide
 
+        if alpha_org is None:
+            alpha_org = fake_alpha
+
         weights = alpha * torch.cumprod(
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
         )[:, :-1]
 
-        fake_weights = alpha * torch.cumprod(
-            torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+        fake_weights = alpha_org * torch.cumprod(
+            torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
 
         rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 

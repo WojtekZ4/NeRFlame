@@ -4,7 +4,7 @@ default_setup_params: &default_setup_params
     N_rand: 1024
     device: 'cuda'
     i_weights: 50000
-    i_testset: 3
+    i_testset: 5000
     i_video: 100000
     i_print: 50000
     input_dims_embed: 3
@@ -48,7 +48,7 @@ face_M1000N_flame_nerf:
     <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_M1000N_setup
-    expname: "flame_nerf_face_M1000_N_v3"
+    expname: "flame_nerf_face_M1000_N_enhanced_mode_True_fake_weights_to_sample_points"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:
