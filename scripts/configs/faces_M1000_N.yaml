@@ -36,6 +36,8 @@ dataset_face_M1000N_setup: &dataset_face_M1000N_setup
     basedir: "logs"
     datadir: "data/face_M1000_N"
     dataset_type: "blender"
+    near: 3.0
+    far: 5.5
 
 face_M1000N_flame_nerf:
   module: "flame_nerf.FlameTrainer"

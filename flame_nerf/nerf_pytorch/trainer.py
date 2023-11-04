@@ -161,9 +161,6 @@ class Trainer:
             print('Loaded blender', images.shape, render_poses.shape, hwf, self.datadir)
             i_train, i_val, i_test = i_split
 
-            self.near = 3.
-            self.far = 5.5
-
             if self.white_bkgd:
                 images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
             else:
