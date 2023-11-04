@@ -36,17 +36,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class FlameTrainer(Trainer):
 
     def __init__(
-        self,
-        epsilon: float,
-        fake_epsilon: float,
-        trans_the_smallest_epsilon: float,
-        trans_the_biggest_epsilon: float,
-        n_the_farthest_samples: int,
-        n_central_samples: int,
-        n_additional_samples: int,
-        flame_config,
-        chunk_render,
-        **kwargs
+            self,
+            epsilon: float,
+            fake_epsilon: float,
+            trans_the_smallest_epsilon: float,
+            trans_the_biggest_epsilon: float,
+            n_the_farthest_samples: int,
+            n_central_samples: int,
+            n_additional_samples: int,
+            flame_config,
+            chunk_render,
+            **kwargs
     ):
         self.epsilon = epsilon
         self.fake_epsilon = fake_epsilon
@@ -90,6 +90,23 @@ class FlameTrainer(Trainer):
 
         self.faces = self.flame_faces()
         self.vertices = None
+
+    def flame_vertices_test(
+            self, f_shape, f_exp, f_pose, f_neck_pose, f_trans
+    ):
+        with torch.no_grad():
+            vertices, _ = self.model_flame(
+                f_shape, f_exp, f_pose,
+                neck_pose=f_neck_pose, transl=f_trans
+            )
+            vertices = torch.squeeze(vertices)
+            # vertices = vertices.cuda()
+
+            vertices = vertices[:, [0, 2, 1]]
+            vertices[:, 1] = -vertices[:, 1]
+            vertices *= self.vertices_mal
+
+            return vertices
 
     def flame_vertices(self):
         """
@@ -155,24 +172,23 @@ class FlameTrainer(Trainer):
 
         return optimizer, render_kwargs_train, render_kwargs_test
 
-
     def sample_main_points(
-        self,
-        near: float,
-        far: float,
-        perturb: float,
-        N_rays: int,
-        N_samples: int,
-        viewdirs: torch.Tensor,
-        network_fn,
-        network_query_fn,
-        rays_o: torch.Tensor,
-        rays_d: torch.Tensor,
-        raw_noise_std: float,
-        white_bkgd: bool,
-        pytest: bool,
-        lindisp: bool,
-        **kwargs
+            self,
+            near: float,
+            far: float,
+            perturb: float,
+            N_rays: int,
+            N_samples: int,
+            viewdirs: torch.Tensor,
+            network_fn,
+            network_query_fn,
+            rays_o: torch.Tensor,
+            rays_d: torch.Tensor,
+            raw_noise_std: float,
+            white_bkgd: bool,
+            pytest: bool,
+            lindisp: bool,
+            **kwargs
     ):
         """
         Sample and run NERF model to predict rgb
@@ -185,7 +201,6 @@ class FlameTrainer(Trainer):
         # take coord verticles from mesh
         vertices = self.vertices
         near_v, far_v = near[0, 0].item(), far[0, 0].item()
-
 
         # calculate distance to mesh
         m = torch.nn.ReLU()
@@ -253,27 +268,26 @@ class FlameTrainer(Trainer):
         if self.f_trans is not None:
             pts += self.f_trans
 
-
         raw = network_query_fn(pts, viewdirs, network_fn)
         rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
-           raw=raw, z_vals=z_vals, rays_d=rays_d, raw_noise_std=raw_noise_std,
-           white_bkgd= white_bkgd,
-           pytest=pytest, alpha_overide=alpha,
-           fake_alpha=fake_alpha,
-           trans_alpha=trans_alpha,
+            raw=raw, z_vals=z_vals, rays_d=rays_d, raw_noise_std=raw_noise_std,
+            white_bkgd=white_bkgd,
+            pytest=pytest, alpha_overide=alpha,
+            fake_alpha=fake_alpha,
+            trans_alpha=trans_alpha,
         )
 
         return rgb_map, disp_map, acc_map, weights, depth_map, z_vals, weights, raw
 
     def raw2outputs(
-        self,
-        raw: torch.Tensor,
-        z_vals: torch.Tensor,
-        rays_d: torch.Tensor,
-        raw_noise_std=0,
-        white_bkgd=False,
-        pytest=False,
-        **kwargs
+            self,
+            raw: torch.Tensor,
+            z_vals: torch.Tensor,
+            rays_d: torch.Tensor,
+            raw_noise_std=0,
+            white_bkgd=False,
+            pytest=False,
+            **kwargs
     ):
         """Transforms model's predictions to semantically meaningful values.
         Args:
@@ -290,7 +304,7 @@ class FlameTrainer(Trainer):
 
         alpha_overide = kwargs["alpha_overide"]
         trans_alpha = kwargs["trans_alpha"]
-        #fake_alpha = kwargs["fake_alpha"]
+        # fake_alpha = kwargs["fake_alpha"]
         enhanced_mode = self.enhanced_mode
 
         raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
@@ -312,7 +326,6 @@ class FlameTrainer(Trainer):
                 noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
                 noise = torch.Tensor(noise)
 
-
         if alpha_overide is None:
             alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
         else:
@@ -325,7 +338,6 @@ class FlameTrainer(Trainer):
         weights = alpha * torch.cumprod(
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
         )[:, :-1]
-
 
         fake_weights = alpha * torch.cumprod(
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
@@ -342,23 +354,23 @@ class FlameTrainer(Trainer):
         return rgb_map, disp_map, acc_map, weights, fake_weights, depth_map
 
     def sample_points(
-        self,
-        z_vals: torch.Tensor,
-        weights: torch.Tensor,
-        perturb: float,
-        pytest: bool,
-        rays_d: torch.Tensor,
-        rays_o: torch.Tensor,
-        rgb_map,
-        disp_map,
-        acc_map,
-        network_fn,
-        network_fine,
-        network_query_fn,
-        viewdirs: torch.Tensor,
-        raw_noise_std: float,
-        white_bkgd: bool,
-        **kwargs
+            self,
+            z_vals: torch.Tensor,
+            weights: torch.Tensor,
+            perturb: float,
+            pytest: bool,
+            rays_d: torch.Tensor,
+            rays_o: torch.Tensor,
+            rgb_map,
+            disp_map,
+            acc_map,
+            network_fn,
+            network_fine,
+            network_query_fn,
+            viewdirs: torch.Tensor,
+            raw_noise_std: float,
+            white_bkgd: bool,
+            **kwargs
     ):
         rgb_map_0, disp_map_0, acc_map_0 = None, None, None
         raw = None
@@ -440,173 +452,173 @@ class FlameTrainer(Trainer):
         return trans, loss, psnr, psnr0
 
     def rest_is_logging(
-        self, i, render_poses, hwf, poses, i_test, images,
-        render_kwargs_train,
-        render_kwargs_test,
-        optimizer,
-        **kwargs
+            self, i, render_poses, hwf, poses, i_test, images,
+            render_kwargs_train,
+            render_kwargs_test,
+            optimizer,
+            **kwargs
     ):
-         if i % self.i_weights == 0:
-             path = os.path.join(self.basedir, self.expname, '{:06d}.tar'.format(i))
-             if render_kwargs_train['network_fine'] is None:
-                 torch.save({
-                     'global_step': self.global_step,
-                     'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                     'optimizer_state_dict': optimizer.state_dict(),
-                     'f_optimizer_state_dict': self.f_opt.state_dict(),
-                     'f_shape': self.f_shape,
-                     'f_exp': self.f_exp,
-                     'f_pose': self.f_pose,
-                     'f_trans': self.f_trans,
-                     'f_neck_pose': self.f_neck_pose,
-                     'epsilon': render_kwargs_test['epsilon'],
-                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                     'trans_epsilon': render_kwargs_test['trans_epsilon'],
-                 }, path)
-             else:
-                 torch.save({
-                     'global_step': self.global_step,
-                     'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                     'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
-                     'optimizer_state_dict': optimizer.state_dict(),
-                     'f_optimizer_state_dict': self.f_opt.state_dict(),
-                     'f_shape': self.f_shape,
-                     'f_exp': self.f_exp,
-                     'f_pose': self.f_pose,
-                     'f_trans': self.f_trans,
-                     'f_neck_pose': self.f_neck_pose,
-                     'epsilon': render_kwargs_test['epsilon'],
-                     'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                     'trans_epsilon': render_kwargs_test['trans_epsilon'],
-                 }, path)
-             print('Saved checkpoints at', path)
+        if i % self.i_weights == 0:
+            path = os.path.join(self.basedir, self.expname, '{:06d}.tar'.format(i))
+            if render_kwargs_train['network_fine'] is None:
+                torch.save({
+                    'global_step': self.global_step,
+                    'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'f_optimizer_state_dict': self.f_opt.state_dict(),
+                    'f_shape': self.f_shape,
+                    'f_exp': self.f_exp,
+                    'f_pose': self.f_pose,
+                    'f_trans': self.f_trans,
+                    'f_neck_pose': self.f_neck_pose,
+                    'epsilon': render_kwargs_test['epsilon'],
+                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
+                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                }, path)
+            else:
+                torch.save({
+                    'global_step': self.global_step,
+                    'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
+                    'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'f_optimizer_state_dict': self.f_opt.state_dict(),
+                    'f_shape': self.f_shape,
+                    'f_exp': self.f_exp,
+                    'f_pose': self.f_pose,
+                    'f_trans': self.f_trans,
+                    'f_neck_pose': self.f_neck_pose,
+                    'epsilon': render_kwargs_test['epsilon'],
+                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
+                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                }, path)
+            print('Saved checkpoints at', path)
 
-         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
-         if i % self.i_testset == 0 and i > 0:
-             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}'.format(i))
-             os.makedirs(testsavedir, exist_ok=True)
-             with torch.no_grad():
-                 vertice = self.flame_vertices()
+        if i % self.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            with torch.no_grad():
+                vertice = self.flame_vertices()
 
-                 outmesh_path = os.path.join(testsavedir, 'face.obj')
-                 write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
-                                  filepath=outmesh_path)
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
+                                 filepath=outmesh_path)
 
-                 print('test poses shape', poses[i_test].shape)
+                print('test poses shape', poses[i_test].shape)
 
+                rgbs, _ = render_path(
+                    poses[i_test], hwf, self.K, self.chunk_render,
+                    render_kwargs_test,
+                    gt_imgs=images[i_test],
+                    savedir=testsavedir,
+                    render_factor=self.render_factor,
+                )
 
-                 rgbs, _ = render_path(
-                     poses[i_test], hwf, self.K, self.chunk_render,
-                     render_kwargs_test,
-                     gt_imgs=images[i_test],
-                     savedir=testsavedir,
-                     render_factor=self.render_factor,
-                 )
+                images_o = torch.tensor(images[i_test]).to(device=device, dtype=torch.float)
+                rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
 
-                 images_o = torch.tensor(images[i_test]).to(device=device, dtype=torch.float)
-                 rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
+                images_o = torch.movedim(images_o, 3, 1)
+                rgbs = torch.movedim(rgbs, 3, 1)
 
-                 images_o = torch.movedim(images_o, 3, 1)
-                 rgbs = torch.movedim(rgbs, 3, 1)
+                psnr_f = PeakSignalNoiseRatio()
+                img_psnr_1 = psnr_f(rgbs, images_o)
 
-                 psnr_f = PeakSignalNoiseRatio()
-                 img_psnr_1 = psnr_f(rgbs, images_o)
+                img_loss = img2mse(rgbs, images_o)
 
-                 img_loss = img2mse(rgbs, images_o)
+                ssim_f = StructuralSimilarityIndexMeasure()
+                img_ssim = ssim_f(rgbs, images_o)
 
-                 ssim_f = StructuralSimilarityIndexMeasure()
-                 img_ssim = ssim_f(rgbs, images_o)
+                lpips_f = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+                img_lpips = lpips_f(rgbs, images_o)
 
-                 lpips_f = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
-                 img_lpips = lpips_f(rgbs, images_o)
+                print("img_loss", img_loss)
+                print("img_psnr_1", img_psnr_1)
+                print("img_ssim", img_ssim)
+                print("img_lpips", img_lpips)
 
-                 print("img_loss", img_loss)
-                 print("img_psnr_1", img_psnr_1)
-                 print("img_ssim", img_ssim)
-                 print("img_lpips", img_lpips)
+                self.log_on_tensorboard(
+                    i,
+                    {
+                        'test': {
+                            'loss': img_loss,
+                            'psnr': img_psnr_1,
+                            'img_ssim': img_ssim,
+                            'img_lpips': img_lpips
+                        }
+                    }
+                )
 
-                 self.log_on_tensorboard(
-                     i,
-                     {
-                         'test': {
-                             'loss': img_loss,
-                             'psnr': img_psnr_1,
-                             'img_ssim': img_ssim,
-                             'img_lpips': img_lpips
-                         }
-                     }
-                 )
+                outstats_path = os.path.join(testsavedir, 'stats.txt')
+                with open(outstats_path, 'w') as fp:
+                    for s, v in {"img_loss": img_loss, "img_psnr": img_psnr_1, "img_ssim": img_ssim,
+                                 "img_lpips": img_lpips}.items():
+                        fp.write('%s %f\n' % (s, v))
 
-                 outstats_path = os.path.join(testsavedir, 'stats.txt')
-                 with open(outstats_path, 'w') as fp:
-                     for s, v in {"img_loss": img_loss, "img_psnr": img_psnr_1, "img_ssim": img_ssim,
-                                  "img_lpips": img_lpips}.items():
-                         fp.write('%s %f\n' % (s, v))
+            print('Saved test set')
 
-             print('Saved test set')
+        if i % self.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot1'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                f_pose_rot = self.f_pose.clone().detach()
+                f_pose_rot[0, 3] = 10.0 * radian
 
-         if i % self.i_testset == 0 and i > 0:
-             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot1'.format(i))
-             os.makedirs(testsavedir, exist_ok=True)
-             radian = np.pi / 180.0
-             with torch.no_grad():
-                 vertice = self.flame_vertices()
+                vertice = self.flame_vertices_test(
+                    self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
+                )
 
-                 f_pose_rot = self.f_pose.clone().detach()
-                 f_pose_rot[0, 3] = 10.0 * radian
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
+                                 filepath=outmesh_path)
 
-                 outmesh_path = os.path.join(testsavedir, 'face.obj')
-                 write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
-                                  filepath=outmesh_path)
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[self.faces.long(), :]
+                triangles_out = vertice[self.faces.long(), :]
 
-                 print('test poses shape', poses[i_test].shape)
-                 triangles_org = vertice[self.faces.long(), :]
-                 triangles_out = vertice[self.faces.long(), :]
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                rgbs, disps = render_path(poses[i_test], hwf, self.K, self.chunk_render,
+                                          render_kwargs_test,
+                                          gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
 
-                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-                 rgbs, disps = render_path(poses[i_test], hwf, self.K, self.chunk_render,
-                             render_kwargs_test,
-                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
-                 render_kwargs_test['trans_mat'] = None
-             print('Saved test set')
+        if i % self.i_testset == 0 and i > 0:
+            testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot2'.format(i))
+            os.makedirs(testsavedir, exist_ok=True)
+            radian = np.pi / 180.0
+            with torch.no_grad():
+                out_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
+                out_neck_pose[0, 1] = 20.0 * radian
 
-         if i % self.i_testset == 0 and i > 0:
-             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot2'.format(i))
-             os.makedirs(testsavedir, exist_ok=True)
-             radian = np.pi / 180.0
-             with torch.no_grad():
-                 out_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
-                 out_neck_pose[0, 1] = 20.0 * radian
+                vertice = self.flame_vertices_test(
+                    self.f_shape, self.f_exp, self.f_pose, out_neck_pose, self.f_trans
+                )
 
-                 vertice = self.flame_vertices()
+                outmesh_path = os.path.join(testsavedir, 'face.obj')
+                write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
+                                 filepath=outmesh_path)
 
-                 outmesh_path = os.path.join(testsavedir, 'face.obj')
-                 write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
-                                  filepath=outmesh_path)
+                print('test poses shape', poses[i_test].shape)
+                triangles_org = vertice[self.faces.long(), :]
+                triangles_out = vertice[self.faces.long(), :]
+                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                rgbs, disps = render_path(torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
+                                          render_kwargs_test,
+                                          gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
+                render_kwargs_test['trans_mat'] = None
+            print('Saved test set')
 
+        torch.cuda.empty_cache()
+        if i % self.i_video == 0 and i > 0:
+            # Turn on testing mode
+            with torch.no_grad():
+                rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
+                                          render_kwargs_test)
+            print('Done, saving', rgbs.shape, disps.shape)
+            moviebase = os.path.join(self.basedir, self.expname, '{}_spiral_f_{:06d}_'.format(self.expname, i))
+            imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
+            imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
-                 print('test poses shape', poses[i_test].shape)
-                 triangles_org = vertice[self.faces.long(), :]
-                 triangles_out = vertice[self.faces.long(), :]
-                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-                 rgbs, disps = render_path(torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
-                             render_kwargs_test,
-                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
-                 render_kwargs_test['trans_mat'] = None
-             print('Saved test set')
-
-
-         torch.cuda.empty_cache()
-         if i % self.i_video == 0 and i > 0:
-             # Turn on testing mode
-             with torch.no_grad():
-                 rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
-                                           render_kwargs_test)
-             print('Done, saving', rgbs.shape, disps.shape)
-             moviebase = os.path.join(self.basedir, self.expname, '{}_spiral_f_{:06d}_'.format(self.expname, i))
-             imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-             imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
-
-
-         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
