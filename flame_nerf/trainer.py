@@ -181,8 +181,7 @@ class FlameTrainer(Trainer):
         )
 
         # take coord verticles from mesh
-        vertices = self.flame_vertices()
-        self.vertices = vertices
+        vertices = self.vertices
         near_v, far_v = near[0, 0].item(), far[0, 0].item()
 
 
@@ -408,6 +407,9 @@ class FlameTrainer(Trainer):
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
+
+        self.vertices = self.flame_vertices()
+
         rgb, disp, acc, extras = render(
             self.H, self.W, self.K,
             chunk=self.chunk, rays=batch_rays,
