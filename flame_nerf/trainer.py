@@ -45,6 +45,7 @@ class FlameTrainer(Trainer):
         n_central_samples: int,
         n_additional_samples: int,
         flame_config,
+        chunk_render,
         **kwargs
     ):
         self.epsilon = epsilon
@@ -55,6 +56,7 @@ class FlameTrainer(Trainer):
         self.n_central_samples = n_central_samples
         self.n_additional_samples = n_additional_samples
         self.enhanced_mode = False
+        self.chunk_render = chunk_render
 
         super().__init__(
             **kwargs
@@ -493,13 +495,13 @@ class FlameTrainer(Trainer):
 
                  print('test poses shape', poses[i_test].shape)
 
+
                  rgbs, _ = render_path(
-                     vertice, self.faces, poses[i_test], hwf, self.K, self.chunk_render,
+                     poses[i_test], hwf, self.K, self.chunk_render,
                      render_kwargs_test,
                      gt_imgs=images[i_test],
                      savedir=testsavedir,
                      render_factor=self.render_factor,
-                     offset=self.f_trans
                  )
 
                  images_o = torch.tensor(images[i_test]).to(device=device, dtype=torch.float)
@@ -563,10 +565,9 @@ class FlameTrainer(Trainer):
                  triangles_out = vertice[self.faces.long(), :]
 
                  render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-                 rgbs, disps = render_path(vertice, self.faces, poses[i_test], hwf, self.K, self.chunk_render,
+                 rgbs, disps = render_path(poses[i_test], hwf, self.K, self.chunk_render,
                              render_kwargs_test,
-                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor,
-                             offset=self.f_trans)
+                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
                  render_kwargs_test['trans_mat'] = None
              print('Saved test set')
 
@@ -589,10 +590,9 @@ class FlameTrainer(Trainer):
                  triangles_org = vertice[self.faces.long(), :]
                  triangles_out = vertice[self.faces.long(), :]
                  render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-                 rgbs, disps = render_path(vertice, self.faces, torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
+                 rgbs, disps = render_path(torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
                              render_kwargs_test,
-                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor,
-                             offset=self.f_trans)
+                             gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
                  render_kwargs_test['trans_mat'] = None
              print('Saved test set')
 
@@ -601,8 +601,8 @@ class FlameTrainer(Trainer):
          if i % self.i_video == 0 and i > 0:
              # Turn on testing mode
              with torch.no_grad():
-                 rgbs, disps = render_path(vertice, self.faces, render_poses, hwf, self.K, self.chunk_render,
-                                           render_kwargs_test, offset=self.f_trans)
+                 rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
+                                           render_kwargs_test)
              print('Done, saving', rgbs.shape, disps.shape)
              moviebase = os.path.join(self.basedir, self.expname, '{}_spiral_f_{:06d}_'.format(self.expname, i))
              imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)

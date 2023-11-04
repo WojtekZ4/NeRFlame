@@ -14,6 +14,7 @@ default_setup_params: &default_setup_params
     netchunk: 1024
     N_samples: 110
     N_importance: 50
+    testskip: 80
 
 default_flame_nerf_params: &default_flame_nerf_params
   epsilon: 0.016
@@ -23,6 +24,7 @@ default_flame_nerf_params: &default_flame_nerf_params
   n_the_farthest_samples: 50
   n_central_samples: 10
   n_additional_samples: 10
+  chunk_render: 1024
 
 
 default_flame_setup_params: &default_flame_setup_params
@@ -46,7 +48,7 @@ face_M1000N_flame_nerf:
     <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_M1000N_setup
-    expname: "flame_nerf_face_M1000_N"
+    expname: "flame_nerf_face_M1000_N_v2"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:
