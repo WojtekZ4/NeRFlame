@@ -1,8 +1,6 @@
 default_setup_params: &default_setup_params
     no_batching: false
     use_viewdirs: false
-    near: 2.0
-    far: 6.0
     N_rand: 1024
     device: 'cuda'
     i_weights: 50000
@@ -31,8 +29,8 @@ default_flame_setup_params: &default_flame_setup_params
   flame_model_path: './FLAME/model/generic_model.pkl'
 
 default_nerf_setup_params: &default_nerf_setup_params
-    N_samples: 64
-    N_importance: 128
+    N_samples: 110
+    N_importance: 50
 
 dataset_face_M1000N_setup: &dataset_face_M1000N_setup
     basedir: "logs"

@@ -144,55 +144,54 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
     return rgbs, disps
 
 
-def create_nerf(args, model):
+def create_nerf(trainer, model):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    embed_fn, input_ch = get_embedder(trainer.multires, trainer.i_embed)
 
     input_ch_views = 0
     embeddirs_fn = None
-    if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    output_ch = 5 if args.N_importance > 0 else 4
+    if trainer.use_viewdirs:
+        embeddirs_fn, input_ch_views = get_embedder(trainer.multires_views, trainer.i_embed)
+    output_ch = 5 if trainer.N_importance > 0 else 4
     skips = [4]
-    model_nerf = model(D=args.netdepth, W=args.netwidth,
+    model_nerf = model(D=trainer.netdepth, W=trainer.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
-                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+                 input_ch_views=input_ch_views, use_viewdirs=trainer.use_viewdirs).to(device)
     grad_vars = list(model_nerf.parameters())
 
     model_fine = None
-    if args.N_importance > 0:
-        model_fine = model(D=args.netdepth_fine, W=args.netwidth_fine,
+    if trainer.N_importance > 0:
+        model_fine = model(D=trainer.netdepth_fine, W=trainer.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
-                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+                          input_ch_views=input_ch_views, use_viewdirs=trainer.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
-    network_query_fn = lambda inputs, viewdirs, network_fn : args.run_network(
+    network_query_fn = lambda inputs, viewdirs, network_fn : trainer.run_network(
         inputs=inputs,
         viewdirs=viewdirs,
         fn=network_fn,
         embed_fn=embed_fn,
         embeddirs_fn=embeddirs_fn,
-        netchunk=args.netchunk
     )
 
     # Create optimizer
-    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
+    optimizer = torch.optim.Adam(params=grad_vars, lr=trainer.lrate, betas=(0.9, 0.999))
 
     start = 0
-    basedir = args.basedir
-    expname = args.expname
+    basedir = trainer.basedir
+    expname = trainer.expname
 
     ##########################
 
     # Load checkpoints
-    if args.ft_path is not None and args.ft_path!='None':
-        ckpts = [args.ft_path]
+    if trainer.ft_path is not None and trainer.ft_path!='None':
+        ckpts = [trainer.ft_path]
     else:
         ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if 'tar' in f]
 
     print('Found ckpts', ckpts)
-    if len(ckpts) > 0 and not args.no_reload:
+    if len(ckpts) > 0 and not trainer.no_reload:
         ckpt_path = ckpts[-1]
         print('Reloading from', ckpt_path)
         ckpt = torch.load(ckpt_path)
@@ -208,23 +207,23 @@ def create_nerf(args, model):
     ##########################
 
     render_kwargs_train = {
-        'network_query_fn' : network_query_fn,
-        'perturb' : args.perturb,
-        'N_importance' : args.N_importance,
-        'network_fine' : model_fine,
-        'N_samples' : args.N_samples,
-        'network_fn' : model_nerf,
-        'use_viewdirs' : args.use_viewdirs,
-        'white_bkgd' : args.white_bkgd,
-        'raw_noise_std' : args.raw_noise_std,
-        'trainer': args
+        'network_query_fn': network_query_fn,
+        'perturb': trainer.perturb,
+        'N_importance': trainer.N_importance,
+        'network_fine': model_fine,
+        'N_samples': trainer.N_samples,
+        'network_fn': model_nerf,
+        'use_viewdirs': trainer.use_viewdirs,
+        'white_bkgd': trainer.white_bkgd,
+        'raw_noise_std': trainer.raw_noise_std,
+        'trainer': trainer
     }
 
     # NDC only good for LLFF-style forward facing data
-    if args.dataset_type != 'llff' or args.no_ndc:
+    if trainer.dataset_type != 'llff' or trainer.no_ndc:
         print('Not ndc!')
         render_kwargs_train['ndc'] = False
-        render_kwargs_train['lindisp'] = args.lindisp
+        render_kwargs_train['lindisp'] = trainer.lindisp
 
     render_kwargs_test = {k : render_kwargs_train[k] for k in render_kwargs_train}
     render_kwargs_test['perturb'] = False
@@ -237,7 +236,7 @@ def render_rays(
     ray_batch,
     network_fn,
     network_query_fn,
-    N_samples,
+    N_samples: int,
     trainer,
     retraw=False,
     lindisp=False,
@@ -283,7 +282,7 @@ def render_rays(
     N_rays = ray_batch.shape[0]
     rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
 
-    viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 1 else None
+    viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
 

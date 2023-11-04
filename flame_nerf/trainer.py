@@ -1,3 +1,5 @@
+"""Trainer to train Flame-Nerf, based on Nerf"""
+
 import numpy as np
 import os
 import imageio
@@ -72,7 +74,14 @@ class FlameTrainer(Trainer):
         f_lr = 0.001
         f_wd = 0.0001
         self.f_opt = torch.optim.Adam(
-            params=[self.f_shape, self.f_exp, self.f_pose, self.f_neck_pose, self.f_trans, self.vertices_mal],
+            params=[
+                self.f_shape,
+                self.f_exp,
+                self.f_pose,
+                self.f_neck_pose,
+                self.f_trans,
+                # self.vertices_mal
+            ],
             lr=f_lr,
             weight_decay=f_wd
         )
@@ -81,6 +90,9 @@ class FlameTrainer(Trainer):
         self.vertices = None
 
     def flame_vertices(self):
+        """
+        Return mesh vertices using FLAME model
+        """
         vertices, _ = self.model_flame(
             self.f_shape, self.f_exp, self.f_pose,
             neck_pose=self.f_neck_pose, transl=self.f_trans
@@ -105,6 +117,9 @@ class FlameTrainer(Trainer):
         return vertices
 
     def flame_faces(self):
+        """
+        Return faces (vertices) indexes using FLAME model.
+        """
         faces = self.model_flame.faces
         faces = torch.tensor(faces.astype(np.int32))
         faces = torch.squeeze(faces)
@@ -112,6 +127,10 @@ class FlameTrainer(Trainer):
         return faces
 
     def create_nerf_model(self):
+        """
+        Create Nerf model based on https://github.com/yenchenlin/nerf-pytorch"
+        implementation. Add additional atributes used to rendering.
+        """
         optimizer, render_kwargs_train, render_kwargs_test = self._create_nerf_model(
             model=NeRF
         )
@@ -134,66 +153,52 @@ class FlameTrainer(Trainer):
 
         return optimizer, render_kwargs_train, render_kwargs_test
 
+
     def sample_main_points(
         self,
-        near,
-        far,
-        perturb,
-        N_rays,
-        N_samples,
-        viewdirs,
+        near: float,
+        far: float,
+        perturb: float,
+        N_rays: int,
+        N_samples: int,
+        viewdirs: torch.Tensor,
         network_fn,
         network_query_fn,
-        rays_o,
-        rays_d,
-        raw_noise_std,
-        white_bkgd,
-        pytest,
-        lindisp,
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        raw_noise_std: float,
+        white_bkgd: bool,
+        pytest: bool,
+        lindisp: bool,
         **kwargs
     ):
+        """
+        Sample and run NERF model to predict rgb
+        """
 
+        pts, z_vals = self._sample_main_points(
+            rays_o, rays_d, near, far, N_rays, N_samples, perturb, pytest, lindisp
+        )
+
+        # take coord verticles from mesh
         vertices = self.flame_vertices()
         self.vertices = vertices
-
         near_v, far_v = near[0, 0].item(), far[0, 0].item()
 
-        t_vals = torch.linspace(0., 1., steps=N_samples)
-        if not lindisp:
-            z_vals = near * (1. - t_vals) + far * (t_vals)
-        else:
-            z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
 
-        z_vals = z_vals.expand([N_rays, N_samples])
-
-        if perturb > 0.:
-            # get intervals between samples
-            mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-            upper = torch.cat([mids, z_vals[..., -1:]], -1)
-            lower = torch.cat([z_vals[..., :1], mids], -1)
-            # stratified samples in those intervals
-            t_rand = torch.rand(z_vals.shape)
-
-            # Pytest, overwrite u with numpy's fixed random numbers
-            if pytest:
-                np.random.seed(0)
-                t_rand = np.random.rand(*list(z_vals.shape))
-                t_rand = torch.Tensor(t_rand)
-
-            z_vals = lower + (upper - lower) * t_rand
-
-        # [N_rays, N_samples, 3]
-        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
-
+        # calculate distance to mesh
         m = torch.nn.ReLU()
         distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
             pts, vertices, self.faces
         )
 
+        # take n_central_samples the closest vertices
+        # to create n_additional_points arround them
         best_vert, best_indexes = torch.topk(
             distances_f, self.n_central_samples, dim=1, largest=False
         )
 
+        # select N_samples - n_the_farthest_samples the closest vertices (?)
         ok_vert, ok_indexes = torch.topk(
             distances_f, self.N_samples - self.n_the_farthest_samples,
             dim=1, largest=False
@@ -247,28 +252,23 @@ class FlameTrainer(Trainer):
         if self.f_trans is not None:
             pts += self.f_trans
 
-        """if trans_mat is not None:
-            trans_mat_organ = trans_mat[idx_f, :]
-            pts = transform_pt(pts, trans_mat_organ)
-        """
 
         raw = network_query_fn(pts, viewdirs, network_fn)
         rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
-           raw, z_vals, rays_d, raw_noise_std,
-           white_bkgd,
+           raw=raw, z_vals=z_vals, rays_d=rays_d, raw_noise_std=raw_noise_std,
+           white_bkgd= white_bkgd,
            pytest=pytest, alpha_overide=alpha,
            fake_alpha=fake_alpha,
            trans_alpha=trans_alpha,
-           enhanced_mode=kwargs['enhanced_mode']
         )
 
         return rgb_map, disp_map, acc_map, weights, depth_map, z_vals, weights, raw
 
     def raw2outputs(
         self,
-        raw,
-        z_vals,
-        rays_d,
+        raw: torch.Tensor,
+        z_vals: torch.Tensor,
+        rays_d: torch.Tensor,
         raw_noise_std=0,
         white_bkgd=False,
         pytest=False,
@@ -289,9 +289,8 @@ class FlameTrainer(Trainer):
 
         alpha_overide = kwargs["alpha_overide"]
         trans_alpha = kwargs["trans_alpha"]
-        fake_alpha = kwargs["fake_alpha"]
+        #fake_alpha = kwargs["fake_alpha"]
         enhanced_mode = self.enhanced_mode
-        alpha_org = 1
 
         raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
 
@@ -312,10 +311,10 @@ class FlameTrainer(Trainer):
                 noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
                 noise = torch.Tensor(noise)
 
+
         if alpha_overide is None:
             alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
         else:
-
             if enhanced_mode:
                 alpha_org = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
                 alpha = torch.minimum(alpha_org, trans_alpha)
@@ -326,8 +325,9 @@ class FlameTrainer(Trainer):
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
         )[:, :-1]
 
-        fake_weights = alpha_org * torch.cumprod(
-            torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
+
+        fake_weights = alpha * torch.cumprod(
+            torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
 
         rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
@@ -343,9 +343,9 @@ class FlameTrainer(Trainer):
     def sample_points(
         self,
         z_vals: torch.Tensor,
-        weights,
-        perturb,
-        pytest,
+        weights: torch.Tensor,
+        perturb: float,
+        pytest: bool,
         rays_d: torch.Tensor,
         rays_o: torch.Tensor,
         rgb_map,
@@ -355,10 +355,12 @@ class FlameTrainer(Trainer):
         network_fine,
         network_query_fn,
         viewdirs: torch.Tensor,
-        raw_noise_std,
-        white_bkgd, **kwargs
+        raw_noise_std: float,
+        white_bkgd: bool,
+        **kwargs
     ):
-        rgb_map_0, disp_map_0, acc_map_0, raw = None, None, None, None
+        rgb_map_0, disp_map_0, acc_map_0 = None, None, None
+        raw = None
         z_samples = None
 
         if self.N_importance > 0:
@@ -390,7 +392,8 @@ class FlameTrainer(Trainer):
 
             run_fn = network_fn if network_fine is None else network_fine
             raw = network_query_fn(pts, viewdirs, run_fn)
-            rgb_map, disp_map, acc_map, _, _ = self.raw2outputs(
+
+            rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
                 raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                 pytest=pytest,
                 alpha_overide=alpha,

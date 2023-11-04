@@ -1,3 +1,5 @@
+"""Trainer to train Nerf, based on https://github.com/yenchenlin/nerf-pytorch"""
+
 from pathlib import Path
 
 from tqdm import trange
@@ -556,14 +558,49 @@ class Trainer:
                 poses,
                 i_test,
                 images,
-                loss,
-                psnr, render_kwargs_train, render_kwargs_test,
+                render_kwargs_train,
+                render_kwargs_test,
                 optimizer
             )
 
             self.global_step += 1
 
         self.writer.close()
+
+    def _sample_main_points(
+            self, rays_o, rays_d,
+            near, far,
+            N_rays,
+            N_samples, perturb,
+            pytest, lindisp
+    ):
+        t_vals = torch.linspace(0., 1., steps=N_samples)
+        if not lindisp:
+            z_vals = near * (1. - t_vals) + far * (t_vals)
+        else:
+            z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
+
+        z_vals = z_vals.expand([N_rays, N_samples])
+
+        if perturb > 0.:
+            # get intervals between samples
+            mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+            upper = torch.cat([mids, z_vals[..., -1:]], -1)
+            lower = torch.cat([z_vals[..., :1], mids], -1)
+            # stratified samples in those intervals
+            t_rand = torch.rand(z_vals.shape)
+
+            # Pytest, overwrite u with numpy's fixed random numbers
+            if pytest:
+                np.random.seed(0)
+                t_rand = np.random.rand(*list(z_vals.shape))
+                t_rand = torch.Tensor(t_rand)
+
+            z_vals = lower + (upper - lower) * t_rand
+
+        # [N_rays, N_samples, 3]
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
+        return pts, z_vals
 
     def sample_main_points(
         self,
@@ -589,31 +626,12 @@ class Trainer:
         z_vals = None
 
         if N_samples > 0:
-            t_vals = torch.linspace(0., 1., steps=N_samples)
-            if not lindisp:
-                z_vals = near * (1. - t_vals) + far * t_vals
-            else:
-                z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * t_vals)
+            pts, z_vals = self._sample_main_points(
+                rays_o, rays_d, near,
+                far, N_rays, N_samples,
+                perturb, pytest, lindisp
+            )
 
-            z_vals = z_vals.expand([N_rays, N_samples])
-
-            if perturb > 0.:
-                # get intervals between samples
-                mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-                upper = torch.cat([mids, z_vals[..., -1:]], -1)
-                lower = torch.cat([z_vals[..., :1], mids], -1)
-                # stratified samples in those intervals
-                t_rand = torch.rand(z_vals.shape)
-
-                # Pytest, overwrite u with numpy's fixed random numbers
-                if pytest:
-                    np.random.seed(0)
-                    t_rand = np.random.rand(*list(z_vals.shape))
-                    t_rand = torch.Tensor(t_rand)
-
-                z_vals = lower + (upper - lower) * t_rand
-
-            pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
             raw = network_query_fn(pts, viewdirs, network_fn)
             rgb_map, disp_map, acc_map, weights, depth_map = self.raw2outputs(
                 raw, z_vals, rays_d, raw_noise_std, white_bkgd,
@@ -712,8 +730,7 @@ class Trainer:
 
         return rgb_map, disp_map, acc_map, weights, depth_map
 
-    @staticmethod
-    def run_network(self, inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
+    def run_network(self, inputs, viewdirs, fn, embed_fn, embeddirs_fn):
         """Prepares inputs and applies network 'fn'.
         """
         inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
@@ -725,6 +742,6 @@ class Trainer:
             embedded_dirs = embeddirs_fn(input_dirs_flat)
             embedded = torch.cat([embedded, embedded_dirs], -1)
 
-        outputs_flat = batchify(fn, netchunk)(embedded)
+        outputs_flat = batchify(fn, self.netchunk)(embedded)
         outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
         return outputs
