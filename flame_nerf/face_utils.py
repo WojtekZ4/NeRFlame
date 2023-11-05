@@ -318,10 +318,12 @@ def distance_point_to_line_segment(point, line_point1, line_point2):
     )
 
 
+"""
 def sigma(x, epsilon):
     # Create a Normal distribution with mean 0 and standard deviation epsilon
     dist = Normal(0, epsilon)
     return torch.exp(dist.log_prob(x)) / torch.exp(dist.log_prob(torch.tensor(0)))
+"""
 
 
 def flame_based_alpha_calculator_f_relu(min_d, m, e):

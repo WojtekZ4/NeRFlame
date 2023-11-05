@@ -50,6 +50,10 @@ class FlameTrainer(Trainer):
             enhanced_mode_stop_iter=None,
             **kwargs
     ):
+        """
+        n_additional_samples - in fact it is n_additional_samples-1,
+        and n_additional_samples should be even.
+        """
         self.epsilon = epsilon
         self.fake_epsilon = fake_epsilon
         self.trans_the_smallest_epsilon = trans_the_smallest_epsilon
@@ -105,7 +109,7 @@ class FlameTrainer(Trainer):
     def update_trans_epsilon(self):
         if self.enhanced_mode:
             if self.global_step > self.enhanced_mode_start_iter:
-                trans_eps_diff = (1 - self.self.minimum_trans_epsilon) * (
+                trans_eps_diff = (1 - self.minimum_trans_epsilon) * (
                         1 - (self.global_step - self.enhanced_mode_start_iter) /
                         (self.enhanced_mode_stop_iter - self.enhanced_mode_start_iter)
                 )
@@ -202,23 +206,106 @@ class FlameTrainer(Trainer):
 
         return optimizer, render_kwargs_train, render_kwargs_test
 
+    def selects_closest_points_to_mesh(self, z_vals, distance_between_pts_and_mesh):
+        # take n_central_samples the closest vertices
+        # to create n_additional_points arround them
+        # wybierz n_central_samples  niemiejszych odleglosci  dla kazdego raya
+        # dla kazdefo reya dostenimy 10 najblizszych punktow/odleglosci do mesha
+        best_vert, best_indexes = torch.topk(
+            distance_between_pts_and_mesh,
+            self.n_central_samples, dim=1, largest=False
+        )
+
+        # wybierz z_vals dla centralnych punktow wokol ktorych bedziemy robic dodatkowe punkty
+        z_values_to_closest_to_mesh = torch.gather(z_vals, 1, best_indexes)
+
+        return z_values_to_closest_to_mesh
+
+    def create_additional_points(
+        self,
+        rays_o, rays_d,
+        z_vals,
+        vertices,
+        distance_between_pts_and_mesh,
+        distance_between_points
+    ):
+
+        z_values_to_closest_to_mesh = self.selects_closest_points_to_mesh(
+            z_vals=z_vals,
+            distance_between_pts_and_mesh=distance_between_pts_and_mesh
+        )
+
+        n_rays = z_values_to_closest_to_mesh.shape[0]
+        # bedziemy teraz budowac greeda wokol punktow centralnych
+        # dla kazedgo raya, dla kazdego centrlanego punktu powieksz wektor  self.n_additional_samples - 1 razy
+        expanded_distance_between_pts_and_mesh = z_values_to_closest_to_mesh.unsqueeze(2).expand(
+            n_rays,
+            z_values_to_closest_to_mesh.shape[1],
+            self.n_additional_samples - 1
+        )
+
+        # stworz otoczke wokol punktow (z_vals) expanded_tensor
+        # ignoruj ostatni punkt
+        new_dist_between_points = torch.linspace(
+            -distance_between_points * 0.5,
+            distance_between_points * 0.5,
+            self.n_additional_samples
+        )[:-1]
+
+        # stworz nowe z_vals dla additional points na podstawie centralnych z_vasl (expanded_tensor) i roznicy step_tensor
+        additional_z_vals = expanded_distance_between_pts_and_mesh + new_dist_between_points
+        additional_z_vals = additional_z_vals.reshape(n_rays, -1)
+
+        # [N_rays, N_samples, 3]
+        _additional_z_vals = additional_z_vals[..., :, None]  # poszerz [N_rays, n_central * n_additiona, 1]
+
+        # stworz punkty additional
+        additional_pts = rays_o[..., None, :] + rays_d[..., None, :] * _additional_z_vals
+
+        # policz dystance do mesha tych dodatkowych punktow
+        additional_distance_f, additional_idx_f = flame_based_alpha_calculator_3_face_version(
+            additional_pts, vertices,
+            self.faces
+        )
+
+        return additional_z_vals, additional_pts, additional_distance_f
+
+    @staticmethod
+    def _concat_selected_points_with_additional_points(
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        z_vals: torch.Tensor,
+        selected_points_indexes: torch.Tensor,
+        selected_points_distance_f: torch.Tensor,
+        additional_z_vals: torch.Tensor,
+        additional_distance_f: torch.Tensor,
+    ):
+        z_vals_without_farthest = torch.gather(z_vals, 1, selected_points_indexes)
+        _z_vals = torch.hstack([z_vals_without_farthest, additional_z_vals])
+
+        distances_f = torch.hstack([selected_points_distance_f, additional_distance_f])
+        z_vals, z_vals_sorted_indexes = torch.sort(_z_vals, dim=1)
+        distances_f = torch.gather(distances_f, 1, z_vals_sorted_indexes)
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
+        return pts, z_vals, distances_f
+
     def sample_main_points(
-            self,
-            near: float,
-            far: float,
-            perturb: float,
-            N_rays: int,
-            N_samples: int,
-            viewdirs: torch.Tensor,
-            network_fn,
-            network_query_fn,
-            rays_o: torch.Tensor,
-            rays_d: torch.Tensor,
-            raw_noise_std: float,
-            white_bkgd: bool,
-            pytest: bool,
-            lindisp: bool,
-            **kwargs
+        self,
+        near: float,
+        far: float,
+        perturb: float,
+        N_rays: int,
+        N_samples: int,
+        viewdirs: torch.Tensor,
+        network_fn,
+        network_query_fn,
+        rays_o: torch.Tensor,
+        rays_d: torch.Tensor,
+        raw_noise_std: float,
+        white_bkgd: bool,
+        pytest: bool,
+        lindisp: bool,
+        **kwargs
     ):
         """
         Sample and run NERF model to predict rgb
@@ -228,72 +315,46 @@ class FlameTrainer(Trainer):
             rays_o, rays_d, near, far, N_rays, N_samples, perturb, pytest, lindisp
         )
 
-        # take coord verticles from mesh
+        # take coord vertices from mesh
         vertices = self.vertices
-        near_v, far_v = near[0, 0].item(), far[0, 0].item()
 
         # calculate distance to mesh
-        m = torch.nn.ReLU()
         distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
             pts, vertices, self.faces
         )
 
-        # take n_central_samples the closest vertices
-        # to create n_additional_points arround them
-        best_vert, best_indexes = torch.topk(
-            distances_f, self.n_central_samples, dim=1, largest=False
+        # near_v -- near_value
+        near_v, far_v = near[0, 0].item(), far[0, 0].item()
+
+        # sredni dystans pomiedzy punktami.
+        dist_between_points = ((far_v - near_v) / (N_samples - 1))
+
+        additional_z_vals, additional_pts, additional_distance_f = self.create_additional_points(
+            rays_o=rays_o,
+            rays_d=rays_d,
+            z_vals=z_vals,
+            vertices=vertices,
+            distance_between_pts_and_mesh=distances_f,
+            distance_between_points=dist_between_points
         )
 
-        # select N_samples - n_the_farthest_samples the closest vertices (?)
-        ok_vert, ok_indexes = torch.topk(
+        # dla kazdefo reya dostenimy n najblizszych punktow/odleglosci do mesha
+        # te kotre po prostu zostaną a bedziemy wywalac te n_the_farthest_samples
+        selected_points_distance_f, selected_points_indexes = torch.topk(
             distances_f, self.N_samples - self.n_the_farthest_samples,
             dim=1, largest=False
         )
-        best_vert_distances = torch.gather(z_vals, 1, best_indexes)
 
-        dist_between_points = ((far_v - near_v) / (N_samples - 1))
-        expanded_tensor = best_vert_distances.unsqueeze(2).expand(
-            best_vert_distances.shape[0],
-            best_vert_distances.shape[1],
-            self.n_additional_samples - 1
+        # concat nearest(selected) samples with additional points
+        pts, z_vals, distances_f = self._concat_selected_points_with_additional_points(
+            rays_o=rays_o,
+            rays_d=rays_d,
+            z_vals=z_vals,
+            selected_points_indexes=selected_points_indexes,
+            selected_points_distance_f=selected_points_distance_f,
+            additional_z_vals=additional_z_vals,
+            additional_distance_f=additional_distance_f
         )
-
-        step_tensor = torch.linspace(
-            -dist_between_points * 0.5,
-            dist_between_points * 0.5,
-            self.n_additional_samples
-        )[:-1]
-
-        additional_distances = expanded_tensor + step_tensor
-        additional_distances = additional_distances.reshape(best_vert_distances.shape[0], -1)
-
-        # [N_rays, N_samples, 3]
-        _additional_z_vals = additional_distances[..., :, None]
-        additional_pts = rays_o[..., None, :] + rays_d[..., None, :] * _additional_z_vals
-        additional_distances_f, additional_idx_f = flame_based_alpha_calculator_3_face_version(
-            additional_pts, vertices,
-            self.faces
-        )
-
-        pts = torch.gather(pts, 1, ok_indexes.unsqueeze(2).expand(-1, -1, pts.size(2)))
-        distances_f = torch.gather(distances_f, 1, ok_indexes)
-        idx_f = torch.gather(idx_f, 1, ok_indexes)
-        z_vals = torch.gather(z_vals, 1, ok_indexes)
-
-        pts = torch.cat((pts, additional_pts), dim=1)
-        distances_f = torch.cat((distances_f, additional_distances_f), dim=1)
-        idx_f = torch.cat((idx_f, additional_idx_f), dim=1)
-        z_vals = torch.cat((z_vals, additional_distances), dim=1)
-
-        z_vals, z_vals_sorted_indexes = torch.sort(z_vals, dim=1)
-
-        pts = torch.gather(pts, 1, z_vals_sorted_indexes.unsqueeze(2).expand(-1, -1, pts.size(2)))
-        distances_f = torch.gather(distances_f, 1, z_vals_sorted_indexes)
-        idx_f = torch.gather(idx_f, 1, z_vals_sorted_indexes)
-
-        alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.epsilon)
-        fake_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.fake_epsilon)
-        trans_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_epsilon)
 
         if self.f_trans is not None:
             pts += self.f_trans
@@ -302,9 +363,7 @@ class FlameTrainer(Trainer):
         rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
             raw=raw, z_vals=z_vals, rays_d=rays_d, raw_noise_std=raw_noise_std,
             white_bkgd=white_bkgd,
-            pytest=pytest, alpha_overide=alpha,
-            fake_alpha=fake_alpha,
-            trans_alpha=trans_alpha,
+            pytest=pytest, distances_f=distances_f,
         )
 
         return rgb_map, disp_map, acc_map, weights, depth_map, z_vals, fake_weights, raw
@@ -314,7 +373,7 @@ class FlameTrainer(Trainer):
             raw: torch.Tensor,
             z_vals: torch.Tensor,
             rays_d: torch.Tensor,
-            raw_noise_std=0,
+            raw_noise_std=0.0,
             white_bkgd=False,
             pytest=False,
             **kwargs
@@ -332,49 +391,45 @@ class FlameTrainer(Trainer):
             depth_map: [num_rays]. Estimated distance to object.
         """
 
-        alpha_overide = kwargs["alpha_overide"]
-        trans_alpha = kwargs["trans_alpha"]
-        fake_alpha = kwargs["fake_alpha"]
-        enhanced_mode = self.enhanced_mode
-        alpha_org = None
-
-        raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
-
-        dists = z_vals[..., 1:] - z_vals[..., :-1]
-
-        # [N_rays, N_samples]
-        dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)
-        dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
-
+        distances_f = kwargs["distances_f"]
         rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
-        noise = 0.
-        if raw_noise_std > 0.:
-            noise = torch.randn(raw[..., 3].shape) * raw_noise_std
 
-            # Overwrite randomly sampled data if pytest
-            if pytest:
-                np.random.seed(0)
-                noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
-                noise = torch.Tensor(noise)
-
-        if alpha_overide is None:
-            alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+        m = torch.nn.ReLU()
+        if self.enhanced_mode is False:
+            alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.epsilon)
+            fake_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.fake_epsilon)
         else:
-            if enhanced_mode:
-                alpha_org = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
-                alpha = torch.minimum(alpha_org, trans_alpha)
-            else:
-                alpha = alpha_overide
+            trans_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_epsilon)
 
-        if alpha_org is None:
-            alpha_org = fake_alpha
+            # calc alpha from nerf
+            raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
+            dists = z_vals[..., 1:] - z_vals[..., :-1]
+
+            # [N_rays, N_samples]
+            dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)
+            dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
+
+            noise = 0.
+            if raw_noise_std > 0.:
+                noise = torch.randn(raw[..., 3].shape) * raw_noise_std
+
+                # Overwrite randomly sampled data if pytest
+                if pytest:
+                    np.random.seed(0)
+                    noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
+                    noise = torch.Tensor(noise)
+
+            alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+            fake_alpha = alpha
+
+            alpha = torch.minimum(alpha, trans_alpha)
 
         weights = alpha * torch.cumprod(
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
         )[:, :-1]
 
-        fake_weights = alpha_org * torch.cumprod(
-            torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
+        fake_weights = fake_alpha * torch.cumprod(
+            torch.cat([torch.ones((fake_alpha.shape[0], 1)), 1. - fake_alpha + 1e-10], -1), -1)[:, :-1]
 
         rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
@@ -426,25 +481,27 @@ class FlameTrainer(Trainer):
             z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
             pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
-            relu = torch.nn.ReLU()
+            #relu = torch.nn.ReLU()
             distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
                 pts, self.vertices, self.faces
             )
+
+            """
             alpha = flame_based_alpha_calculator_f_relu(
                 distances_f, relu, self.epsilon
             )
             trans_alpha = flame_based_alpha_calculator_f_relu(
                 distances_f, relu, self.trans_epsilon
             )
+            """
 
             run_fn = network_fn if network_fine is None else network_fine
             raw = network_query_fn(pts, viewdirs, run_fn)
 
-            rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
+            rgb_map, disp_map, acc_map, _, _, depth_map = self.raw2outputs(
                 raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                 pytest=pytest,
-                alpha_overide=alpha,
-                trans_alpha=trans_alpha,
+                distances_f=distances_f,
                 enhanced_mode=self.enhanced_mode
             )
 
