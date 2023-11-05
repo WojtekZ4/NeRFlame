@@ -118,7 +118,7 @@ class FlameTrainer(Trainer):
             if self.enhanced_mode_start_iter is None:
                 self.enhanced_mode_start_iter = 1
             if self.enhanced_mode_stop_iter is None:
-                self.enhanced_mode_start_iter = n_iters
+                self.enhanced_mode_stop_iter = n_iters
 
     def flame_vertices_test(
             self, f_shape, f_exp, f_pose, f_neck_pose, f_trans
