@@ -106,6 +106,7 @@ class Trainer:
         self.W = None
         self.H = None
         self.c2w = None
+        self.N_iters = None
         self.half_res = half_res
         self.testskip = testskip
         self.white_bkgd = white_bkgd
@@ -495,7 +496,12 @@ class Trainer:
                 self.writer.add_scalar(f"{i}/{j}", metrics[i][j], step)
         self.writer.flush()
 
+    def _train_prepare(self, n_iters):
+        self.N_iters = n_iters
+
     def train(self, N_iters = 200000 + 1):
+        self._train_prepare(N_iters)
+
         hwf, poses, i_test, i_val, i_train, images, render_poses = self.load_data()
 
         if self.render_test:

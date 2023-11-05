@@ -48,7 +48,7 @@ face_M1000N_flame_nerf:
     <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_M1000N_setup
-    expname: "flame_nerf_face_M1000_N_enhanced_mode_True_fake_weights_to_sample_points"
+    expname: "test"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:

@@ -46,6 +46,8 @@ class FlameTrainer(Trainer):
             n_additional_samples: int,
             flame_config,
             chunk_render,
+            enhanced_mode_start_iter=None,
+            enhanced_mode_stop_iter=None,
             **kwargs
     ):
         self.epsilon = epsilon
@@ -55,6 +57,9 @@ class FlameTrainer(Trainer):
         self.n_the_farthest_samples = n_the_farthest_samples
         self.n_central_samples = n_central_samples
         self.n_additional_samples = n_additional_samples
+        self.enhanced_mode_start_iter = enhanced_mode_start_iter
+        self.enhanced_mode_stop_iter = enhanced_mode_stop_iter
+
         self.enhanced_mode = True
         self.chunk_render = chunk_render
 
@@ -90,6 +95,30 @@ class FlameTrainer(Trainer):
 
         self.faces = self.flame_faces()
         self.vertices = None
+
+        self.trans_epsilon_modifier = 1
+
+        if self.enhanced_mode:
+            self.minimum_trans_epsilon = self.trans_the_biggest_epsilon/self.trans_the_smallest_epsilon
+        self.trans_epsilon = self.trans_the_smallest_epsilon * self.trans_epsilon_modifier
+
+    def update_trans_epsilon(self):
+        if self.enhanced_mode:
+            if self.global_step > self.enhanced_mode_start_iter:
+                trans_eps_diff = (1 - self.self.minimum_trans_epsilon) * (
+                        1 - (self.global_step - self.enhanced_mode_start_iter) /
+                        (self.enhanced_mode_stop_iter - self.enhanced_mode_start_iter)
+                )
+                self.trans_epsilon_modifier = self.minimum_trans_epsilon + trans_eps_diff
+                self.trans_epsilon = self.trans_the_smallest_epsilon * self.trans_epsilon_modifier
+
+    def _train_prepare(self, n_iters):
+        self.N_iters = n_iters
+        if self.enhanced_mode:
+            if self.enhanced_mode_start_iter is None:
+                self.enhanced_mode_start_iter = 1
+            if self.enhanced_mode_stop_iter is None:
+                self.enhanced_mode_start_iter = n_iters
 
     def flame_vertices_test(
             self, f_shape, f_exp, f_pose, f_neck_pose, f_trans
@@ -160,7 +189,8 @@ class FlameTrainer(Trainer):
             'trans_the_smallest_epsilon': self.trans_the_smallest_epsilon,
             'trans_the_biggest_epsilon': self.trans_the_biggest_epsilon,
             'enhanced_mode': self.enhanced_mode,
-            'enhanced_mode_modifier': 1.0,
+            'trans_epsilon_modifier': self.trans_epsilon_modifier,
+            'trans_epsilon': self.trans_epsilon,
             'n_the_farthest_samples': self.n_the_farthest_samples,
             'n_central_samples': self.n_central_samples,
             'n_additional_samples': self.n_additional_samples,
@@ -263,7 +293,7 @@ class FlameTrainer(Trainer):
 
         alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.epsilon)
         fake_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.fake_epsilon)
-        trans_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_the_smallest_epsilon)
+        trans_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_epsilon)
 
         if self.f_trans is not None:
             pts += self.f_trans
@@ -404,7 +434,7 @@ class FlameTrainer(Trainer):
                 distances_f, relu, self.epsilon
             )
             trans_alpha = flame_based_alpha_calculator_f_relu(
-                distances_f, relu, self.trans_the_smallest_epsilon
+                distances_f, relu, self.trans_epsilon
             )
 
             run_fn = network_fn if network_fine is None else network_fine
@@ -425,7 +455,7 @@ class FlameTrainer(Trainer):
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
-
+        self.update_trans_epsilon()
         self.vertices = self.flame_vertices()
 
         rgb, disp, acc, extras = render(
