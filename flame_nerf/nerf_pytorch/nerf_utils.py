@@ -319,7 +319,8 @@ def render_rays(
         network_query_fn=network_query_fn,
         viewdirs=viewdirs,
         raw_noise_std=raw_noise_std,
-        white_bkgd=white_bkgd
+        white_bkgd=white_bkgd,
+        **kwargs
     )
 
     ret = {'rgb_map' : rgb_map, 'disp_map' : disp_map, 'acc_map' : acc_map}

@@ -269,26 +269,34 @@ class FlameTrainer(Trainer):
             self.faces
         )
 
-        return additional_z_vals, additional_pts, additional_distance_f
+        return (additional_z_vals, additional_pts,
+                additional_distance_f, additional_idx_f)
 
     @staticmethod
     def _concat_selected_points_with_additional_points(
         rays_o: torch.Tensor,
         rays_d: torch.Tensor,
         z_vals: torch.Tensor,
+        idx_f: torch.Tensor,
+        additional_idx_f: torch.Tensor,
         selected_points_indexes: torch.Tensor,
         selected_points_distance_f: torch.Tensor,
         additional_z_vals: torch.Tensor,
         additional_distance_f: torch.Tensor,
     ):
         z_vals_without_farthest = torch.gather(z_vals, 1, selected_points_indexes)
+        idx_f_without_farthest = torch.gather(idx_f, 1, selected_points_indexes)
         _z_vals = torch.hstack([z_vals_without_farthest, additional_z_vals])
 
         distances_f = torch.hstack([selected_points_distance_f, additional_distance_f])
+        idx_f = torch.hstack([idx_f_without_farthest, additional_idx_f])
+
         z_vals, z_vals_sorted_indexes = torch.sort(_z_vals, dim=1)
         distances_f = torch.gather(distances_f, 1, z_vals_sorted_indexes)
+        idx_f = torch.gather(idx_f, 1, z_vals_sorted_indexes)
+
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
-        return pts, z_vals, distances_f
+        return pts, z_vals, distances_f, idx_f
 
     def sample_main_points(
         self,
@@ -318,6 +326,9 @@ class FlameTrainer(Trainer):
 
         # take coord vertices from mesh
         vertices = self.vertices
+        if 'test_vertices' in kwargs:
+            if kwargs['test_vertices'] is not None:
+                vertices = kwargs['test_vertices']
 
         # calculate distance to mesh
         distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
@@ -330,7 +341,8 @@ class FlameTrainer(Trainer):
         # sredni dystans pomiedzy punktami.
         dist_between_points = ((far_v - near_v) / (N_samples - 1))
 
-        additional_z_vals, additional_pts, additional_distance_f = self.create_additional_points(
+        (additional_z_vals, additional_pts,
+         additional_distance_f, additional_idx_f) = self.create_additional_points(
             rays_o=rays_o,
             rays_d=rays_d,
             z_vals=z_vals,
@@ -347,10 +359,12 @@ class FlameTrainer(Trainer):
         )
 
         # concat nearest(selected) samples with additional points
-        pts, z_vals, distances_f = self._concat_selected_points_with_additional_points(
+        pts, z_vals, distances_f, idx_f = self._concat_selected_points_with_additional_points(
             rays_o=rays_o,
             rays_d=rays_d,
             z_vals=z_vals,
+            idx_f=idx_f,
+            additional_idx_f=additional_idx_f,
             selected_points_indexes=selected_points_indexes,
             selected_points_distance_f=selected_points_distance_f,
             additional_z_vals=additional_z_vals,
@@ -466,6 +480,7 @@ class FlameTrainer(Trainer):
             white_bkgd: bool,
             **kwargs
     ):
+
         rgb_map_0, disp_map_0, acc_map_0 = None, None, None
         raw = None
         z_samples = None
@@ -486,9 +501,14 @@ class FlameTrainer(Trainer):
             z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
             pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
+            vertices = self.vertices
+            if 'test_vertices' in kwargs:
+                if kwargs['test_vertices'] is not None:
+                    vertices = kwargs['test_vertices']
+
             #relu = torch.nn.ReLU()
             distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
-                pts, self.vertices, self.faces
+                pts, vertices, self.faces
             )
 
             run_fn = network_fn if network_fine is None else network_fine
@@ -581,7 +601,7 @@ class FlameTrainer(Trainer):
             print('Saved checkpoints at', path)
 
         torch.cuda.empty_cache()
-
+        """
         if i % self.i_testset == 0 and i > 0:
             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
@@ -643,14 +663,14 @@ class FlameTrainer(Trainer):
                         fp.write('%s %f\n' % (s, v))
 
             print('Saved test set')
-
+        """
         if i % self.i_testset == 0 and i > 0:
             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot1'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
             radian = np.pi / 180.0
             with torch.no_grad():
                 f_pose_rot = self.f_pose.clone().detach()
-                f_pose_rot[0, 3] = 10.0 * radian
+                f_pose_rot[0, 3] = 30.0 * radian
 
                 vertice = self.flame_vertices_test(
                     self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
@@ -664,11 +684,14 @@ class FlameTrainer(Trainer):
                 triangles_org = self.vertices[self.faces.long(), :]
                 triangles_out = vertice[self.faces.long(), :]
 
-                render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                trans_mat = recover_homogenous_affine_transformation(triangles_out, triangles_org) # transform matrix
+                render_kwargs_test['trans_mat'] = trans_mat
+                render_kwargs_test['test_vertices'] = vertice
                 rgbs, disps = render_path(poses[i_test], hwf, self.K, self.chunk_render,
                                           render_kwargs_test,
                                           gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
                 render_kwargs_test['trans_mat'] = None
+                render_kwargs_test['test_vertices'] = None
             print('Saved test set')
 
         if i % self.i_testset == 0 and i > 0:
@@ -691,12 +714,15 @@ class FlameTrainer(Trainer):
                 triangles_org = self.vertices[self.faces.long(), :]
                 triangles_out = vertice[self.faces.long(), :]
                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
+                render_kwargs_test['test_vertices'] = vertice
                 rgbs, disps = render_path(
                     torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
                     render_kwargs_test,
                     gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor
                 )
                 render_kwargs_test['trans_mat'] = None
+                render_kwargs_test['test_vertices'] = None
+
             print('Saved test set')
 
         torch.cuda.empty_cache()
