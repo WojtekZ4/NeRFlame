@@ -174,7 +174,7 @@ def point_mesh_face_distance(
 
     return point_to_face, idx
 
-
+"""
 def mesh_face_point_distance(
         meshes: Meshes,
         pcls: Pointclouds,
@@ -202,6 +202,7 @@ def mesh_face_point_distance(
     )
 
     return face_to_point, idx
+"""
 
 
 def write_simple_obj(mesh_v, mesh_f, filepath, verbose=False):
@@ -248,11 +249,14 @@ def recover_homogenous_affine_transformation(p, p_prime):
 
 
 def transform_pt(point, trans_mat):
-    a = np.array([point[0], point[1], point[2], 1])
-    ap = np.dot(a, trans_mat)[:3]
-    return [ap[0], ap[1], ap[2]]
+    """
+       Transform a 3D point using a transformation matrix.
+    """
+    a = torch.cat((point, torch.ones(point.shape[0], point.shape[1], 1)), dim=-1)
+    ap = torch.einsum("tik,tikj->tij", a, trans_mat)[..., :3]
+    return ap.squeeze(0)
 
-
+"""
 def distance_from_triangle(point, triangle):
     # Define vectors for triangle edges
     v0 = triangle[..., 2, :] - triangle[..., 0, :]
@@ -270,6 +274,7 @@ def distance_from_triangle(point, triangle):
     closest_point = point - torch.abs(plane_normal * d.unsqueeze(-1))
     distance_2d = distance_from_triangle_2d(closest_point, triangle)
     return torch.sqrt(torch.pow(d, 2) + torch.pow(distance_2d, 2))
+"""
 
 
 def distance_from_triangle_2d(point, triangle):

@@ -15,7 +15,7 @@ from flame_nerf.face_utils import (
     flame_based_alpha_calculator_f_relu,
     flame_based_alpha_calculator_3_face_version,
     recover_homogenous_affine_transformation,
-    write_simple_obj
+    write_simple_obj, transform_pt
 )
 from flame_nerf.nerf_pytorch.nerf_utils import (
     render,
@@ -198,11 +198,12 @@ class FlameTrainer(Trainer):
             'n_the_farthest_samples': self.n_the_farthest_samples,
             'n_central_samples': self.n_central_samples,
             'n_additional_samples': self.n_additional_samples,
+            'trans_mat': None
         }
 
         for i in additional_render_kwargs_train:
             render_kwargs_train[i] = additional_render_kwargs_train[i]
-            render_kwargs_train[i] = additional_render_kwargs_train[i]
+            render_kwargs_test[i] = additional_render_kwargs_train[i]
 
         return optimizer, render_kwargs_train, render_kwargs_test
 
@@ -359,6 +360,10 @@ class FlameTrainer(Trainer):
         if self.f_trans is not None:
             pts += self.f_trans
 
+        if kwargs['trans_mat'] is not None:
+            trans_mat_organ = kwargs['trans_mat'][idx_f, :]
+            pts = transform_pt(pts, trans_mat_organ)
+
         raw = network_query_fn(pts, viewdirs, network_fn)
         rgb_map, disp_map, acc_map, weights, fake_weights, depth_map = self.raw2outputs(
             raw=raw, z_vals=z_vals, rays_d=rays_d, raw_noise_std=raw_noise_std,
@@ -485,15 +490,6 @@ class FlameTrainer(Trainer):
             distances_f, idx_f = flame_based_alpha_calculator_3_face_version(
                 pts, self.vertices, self.faces
             )
-
-            """
-            alpha = flame_based_alpha_calculator_f_relu(
-                distances_f, relu, self.epsilon
-            )
-            trans_alpha = flame_based_alpha_calculator_f_relu(
-                distances_f, relu, self.trans_epsilon
-            )
-            """
 
             run_fn = network_fn if network_fine is None else network_fine
             raw = network_query_fn(pts, viewdirs, run_fn)
@@ -665,7 +661,7 @@ class FlameTrainer(Trainer):
                                  filepath=outmesh_path)
 
                 print('test poses shape', poses[i_test].shape)
-                triangles_org = vertice[self.faces.long(), :]
+                triangles_org = self.vertices[self.faces.long(), :]
                 triangles_out = vertice[self.faces.long(), :]
 
                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
@@ -692,12 +688,14 @@ class FlameTrainer(Trainer):
                                  filepath=outmesh_path)
 
                 print('test poses shape', poses[i_test].shape)
-                triangles_org = vertice[self.faces.long(), :]
+                triangles_org = self.vertices[self.faces.long(), :]
                 triangles_out = vertice[self.faces.long(), :]
                 render_kwargs_test['trans_mat'] = recover_homogenous_affine_transformation(triangles_out, triangles_org)
-                rgbs, disps = render_path(torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
-                                          render_kwargs_test,
-                                          gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor)
+                rgbs, disps = render_path(
+                    torch.Tensor(poses[i_test]).to(device), hwf, self.K, self.chunk_render,
+                    render_kwargs_test,
+                    gt_imgs=images[i_test], savedir=testsavedir, render_factor=self.render_factor
+                )
                 render_kwargs_test['trans_mat'] = None
             print('Saved test set')
 
