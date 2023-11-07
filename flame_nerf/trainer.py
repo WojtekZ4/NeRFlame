@@ -511,6 +511,13 @@ class FlameTrainer(Trainer):
                 pts, vertices, self.faces
             )
 
+            if self.f_trans is not None:
+                pts += self.f_trans
+
+            if kwargs['trans_mat'] is not None:
+                trans_mat_organ = kwargs['trans_mat'][idx_f, :]
+                pts = transform_pt(pts, trans_mat_organ)
+
             run_fn = network_fn if network_fine is None else network_fine
             raw = network_query_fn(pts, viewdirs, run_fn)
 
@@ -601,7 +608,7 @@ class FlameTrainer(Trainer):
             print('Saved checkpoints at', path)
 
         torch.cuda.empty_cache()
-        """
+
         if i % self.i_testset == 0 and i > 0:
             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
@@ -663,7 +670,7 @@ class FlameTrainer(Trainer):
                         fp.write('%s %f\n' % (s, v))
 
             print('Saved test set')
-        """
+
         if i % self.i_testset == 0 and i > 0:
             testsavedir = os.path.join(self.basedir, self.expname, 'testset_f_{:06d}_rot1'.format(i))
             os.makedirs(testsavedir, exist_ok=True)

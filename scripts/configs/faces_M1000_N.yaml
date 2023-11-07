@@ -4,7 +4,7 @@ default_setup_params: &default_setup_params
     N_rand: 1024
     device: 'cuda'
     i_weights: 50000
-    i_testset: 50
+    i_testset: 500
     i_video: 100000
     i_print: 50000
     input_dims_embed: 3
@@ -13,16 +13,16 @@ default_setup_params: &default_setup_params
     chunk: 1024
     netchunk: 1024
     N_samples: 110
-    N_importance: 50
+    N_importance: 100
     testskip: 80
 
 default_flame_nerf_params: &default_flame_nerf_params
-  epsilon: 0.01
-  fake_epsilon: 0.01
-  trans_the_smallest_epsilon: 0.01
+  epsilon: 0.016
+  fake_epsilon: 0.04
+  trans_the_smallest_epsilon: 0.15
   trans_the_biggest_epsilon: 0.005
   n_the_farthest_samples: 50
-  n_central_samples: 10
+  n_central_samples: 20
   n_additional_samples: 10
   chunk_render: 1024
 
@@ -48,7 +48,7 @@ face_M1000N_flame_nerf:
     <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_M1000N_setup
-    expname: "test4"
+    expname: "test6"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:
