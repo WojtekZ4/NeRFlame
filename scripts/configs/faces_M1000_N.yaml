@@ -10,9 +10,9 @@ default_setup_params: &default_setup_params
     input_dims_embed: 3
     white_bkgd: True
     half_res: true
-    chunk: 1024
-    netchunk: 1024
-    N_samples: 110
+    chunk: 16384
+    netchunk: 16384
+    N_samples: 100
     N_importance: 140
     testskip: 80
 
@@ -21,18 +21,24 @@ default_flame_nerf_params: &default_flame_nerf_params
   fake_epsilon: 0.04
   trans_the_smallest_epsilon: 0.15
   trans_the_biggest_epsilon: 0.005
-  n_the_farthest_samples: 90
+  n_the_farthest_samples: 60
   n_central_samples: 20
   n_additional_samples: 2
-  chunk_render: 1024
+  chunk_render: 16384
+  enhanced_mode_switch: 0.0
+  #eps_increase_multiplier: 10
+  additional_samples: true
+  samples_multiplier: 2
+  use_pretrained_nerf: true
+  pretrained_save_iter: 3
 
 
 default_flame_setup_params: &default_flame_setup_params
   flame_model_path: './FLAME/model/generic_model.pkl'
 
-default_nerf_setup_params: &default_nerf_setup_params
-    N_samples: 110
-    N_importance: 50
+#default_nerf_setup_params: &default_nerf_setup_params
+#    N_samples: 110
+#    N_importance: 50
 
 dataset_face_M1000N_setup: &dataset_face_M1000N_setup
     basedir: "logs"
@@ -42,10 +48,10 @@ dataset_face_M1000N_setup: &dataset_face_M1000N_setup
     far: 5.5
 
 face_M1000N_flame_nerf:
-  module: "flame_nerf.FlameTrainer"
+  module: "flame_nerf.trainer_frozen_mesh.FrozenFlameTrainer"
   kwargs:
     <<: *default_setup_params
-    <<: *default_nerf_setup_params
+    #<<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_M1000N_setup
     expname: "test6"
