@@ -66,6 +66,7 @@ class FlameTrainer(Trainer):
 
         self.enhanced_mode = True
         self.chunk_render = chunk_render
+        self.move_mesh = False
 
         super().__init__(
             **kwargs
@@ -82,7 +83,7 @@ class FlameTrainer(Trainer):
         self.f_trans = nn.Parameter(torch.zeros(1, 3).float().to(self.device))
         self.vertices_mal = nn.Parameter(8 * torch.ones(1, 1).float().to(self.device))
 
-        f_lr = 0.001
+        f_lr = 0.0005
         f_wd = 0.0001
         self.f_opt = torch.optim.Adam(
             params=[
@@ -535,6 +536,10 @@ class FlameTrainer(Trainer):
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
+
+        if self.global_step > 2000:
+            self.move_mesh = True
+
         self.update_trans_epsilon()
         self.vertices = self.flame_vertices()
 
@@ -561,7 +566,8 @@ class FlameTrainer(Trainer):
 
         loss.backward()
         optimizer.step()
-        self.f_opt.step()
+        if self.move_mesh:
+            self.f_opt.step()
 
         return trans, loss, psnr, psnr0
 
