@@ -19,11 +19,11 @@ default_setup_params: &default_setup_params
 default_flame_nerf_params: &default_flame_nerf_params
   epsilon: 0.016
   fake_epsilon: 0.04
-  trans_the_smallest_epsilon: 0.15
+  trans_the_smallest_epsilon: 0.05
   trans_the_biggest_epsilon: 0.005
   n_the_farthest_samples: 90
-  n_central_samples: 20
-  n_additional_samples: 2
+  n_central_samples: 10
+  n_additional_samples: 12
   chunk_render: 1024
 
 

@@ -82,8 +82,8 @@ class FlameTrainer(Trainer):
         self.f_trans = nn.Parameter(torch.zeros(1, 3).float().to(self.device))
         self.vertices_mal = nn.Parameter(8 * torch.ones(1, 1).float().to(self.device))
 
-        f_lr = 0.001
-        f_wd = 0.0001
+        f_lr = 0.01
+        f_wd = 0.001
         self.f_opt = torch.optim.Adam(
             params=[
                 self.f_shape,
@@ -447,8 +447,8 @@ class FlameTrainer(Trainer):
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
         )[:, :-1]
 
-        fake_weights = fake_alpha * torch.cumprod(
-            torch.cat([torch.ones((fake_alpha.shape[0], 1)), 1. - fake_alpha + 1e-10], -1), -1)[:, :-1]
+        fake_weights = alpha * torch.cumprod(
+            torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
 
         rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
@@ -535,6 +535,10 @@ class FlameTrainer(Trainer):
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
+        with torch.no_grad():
+            self.f_shape = torch.clamp(self.f_shape, min=-1.9, max=1.9)
+            self.f_exp = torch.clamp(self.f_exp, min=-1.9, max=1.9)
+
         self.update_trans_epsilon()
         self.vertices = self.flame_vertices()
 
