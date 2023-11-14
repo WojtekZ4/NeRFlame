@@ -1,0 +1,62 @@
+default_setup_params: &default_setup_params
+    no_batching: false
+    use_viewdirs: false
+    N_rand: 1024
+    device: 'cuda'
+    i_weights: 5000
+    i_testset: 5000
+    i_video: 100000
+    i_print: 50000
+    input_dims_embed: 3
+    white_bkgd: True
+    half_res: true
+    chunk: 16384
+    netchunk: 16384
+    N_samples: 110
+    N_importance: 140
+    testskip: 16
+
+default_flame_nerf_params: &default_flame_nerf_params
+  epsilon: 0.016
+  fake_epsilon: 0.04
+  trans_the_smallest_epsilon: 0.1
+  trans_the_biggest_epsilon: 0.005
+  n_the_farthest_samples: 60
+  n_central_samples: 10
+  n_additional_samples: 4
+  chunk_render: 16384
+  enhanced_mode_switch: 0.6
+  #eps_increase_multiplier: 3
+  additional_samples: true
+  samples_multiplier: 2
+  use_pretrained_nerf: true
+  pretrained_save_iter: 10000
+
+
+
+default_flame_setup_params: &default_flame_setup_params
+  flame_model_path: './FLAME/model/generic_model.pkl'
+
+#default_nerf_setup_params: &default_nerf_setup_params
+#    N_samples: 110
+#    N_importance: 50
+
+dataset_face_f1036A_setup: &dataset_face_f1036A_setup
+    basedir: "logs"
+    datadir: "data/face_f1036_A/face_f1036_A"
+    dataset_type: "blender"
+    near: 3.0
+    far: 5.5
+
+face_f1036A_flame_nerf:
+  module: "flame_nerf.FlameTrainer"
+  kwargs:
+    <<: *default_setup_params
+#    <<: *default_nerf_setup_params
+    <<: *default_flame_nerf_params
+    <<: *dataset_face_f1036A_setup
+    expname: "f1036A_additional_sampling_2_0.005_eps_load_nerf"
+    flame_config:
+      module: "FLAME.FlameConfig"
+      kwargs:
+        <<: *default_flame_setup_params
