@@ -66,6 +66,7 @@ class FlameTrainer(Trainer):
 
         self.enhanced_mode = True
         self.chunk_render = chunk_render
+        self.move_mesh = False
 
         super().__init__(
             **kwargs
@@ -535,6 +536,10 @@ class FlameTrainer(Trainer):
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
+
+        if self.global_step > 2000:
+            self.move_mesh = True
+
         with torch.no_grad():
             self.f_shape = torch.clamp(self.f_shape, min=-1.9, max=1.9)
             self.f_exp = torch.clamp(self.f_exp, min=-1.9, max=1.9)
@@ -565,7 +570,8 @@ class FlameTrainer(Trainer):
 
         loss.backward()
         optimizer.step()
-        self.f_opt.step()
+        if self.move_mesh:
+            self.f_opt.step()
 
         return trans, loss, psnr, psnr0
 
