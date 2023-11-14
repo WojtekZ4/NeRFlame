@@ -198,11 +198,21 @@ def create_nerf(trainer, model):
 
         start = ckpt['global_step']
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        trainer.f_opt.load_state_dict(ckpt['f_optimizer_state_dict'])
 
         # Load model
         model_nerf.load_state_dict(ckpt['network_fn_state_dict'])
         if model_fine is not None:
             model_fine.load_state_dict(ckpt['network_fine_state_dict'])
+
+        trainer.f_shape = ckpt['f_shape']
+        trainer.f_exp = ckpt['f_exp']
+        trainer.f_pose = ckpt['f_pose']
+        trainer.f_trans = ckpt['f_trans']
+        trainer.f_neck_pose = ckpt['f_neck_pose']
+        trainer.epsilon = ckpt['epsilon']
+        trainer.fake_epsilon = ckpt['fake_epsilon']
+        trainer.trans_epsilon = ckpt['trans_epsilon'] 
 
     ##########################
 

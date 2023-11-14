@@ -48,6 +48,7 @@ class FlameTrainer(Trainer):
             chunk_render,
             enhanced_mode_start_iter=None,
             enhanced_mode_stop_iter=None,
+            no_reload=True,
             **kwargs
     ):
         """
@@ -63,6 +64,8 @@ class FlameTrainer(Trainer):
         self.n_additional_samples = n_additional_samples
         self.enhanced_mode_start_iter = enhanced_mode_start_iter
         self.enhanced_mode_stop_iter = enhanced_mode_stop_iter
+
+        self.no_reload = no_reload
 
         self.enhanced_mode = True
         self.chunk_render = chunk_render
