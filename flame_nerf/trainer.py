@@ -328,6 +328,8 @@ class FlameTrainer(Trainer):
         )
 
         # take coord vertices from mesh
+        if self.vertices is None:
+            self.vertices = self.flame_vertices()
         vertices = self.vertices
         if 'test_vertices' in kwargs:
             if kwargs['test_vertices'] is not None:
@@ -680,7 +682,7 @@ class FlameTrainer(Trainer):
             radian = np.pi / 180.0
             with torch.no_grad():
                 f_pose_rot = self.f_pose.clone().detach()
-                f_pose_rot[0, 3] = 30.0 * radian
+                f_pose_rot[0, 3] = 10.0 * radian
 
                 vertice = self.flame_vertices_test(
                     self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
