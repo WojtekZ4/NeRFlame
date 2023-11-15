@@ -162,9 +162,9 @@ class FrozenFlameTrainer(FlameTrainer):
                     'f_pose': self.f_pose,
                     'f_trans': self.f_trans,
                     'f_neck_pose': self.f_neck_pose,
-                    'epsilon': render_kwargs_test['epsilon'],
-                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                    'epsilon': self.epsilon,
+                    'fake_epsilon': self.fake_epsilon,
+                    'trans_epsilon': self.trans_epsilon,
                 }, path)
             else:
                 torch.save({
@@ -178,9 +178,9 @@ class FrozenFlameTrainer(FlameTrainer):
                     'f_pose': self.f_pose,
                     'f_trans': self.f_trans,
                     'f_neck_pose': self.f_neck_pose,
-                    'epsilon': render_kwargs_test['epsilon'],
-                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                    'epsilon': self.epsilon,
+                    'fake_epsilon': self.fake_epsilon,
+                    'trans_epsilon': self.trans_epsilon,
                 }, path)
             print('Saved checkpoints at', path)
 
