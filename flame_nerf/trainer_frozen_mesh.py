@@ -53,6 +53,8 @@ class FrozenFlameTrainer(FlameTrainer):
         self.pretrained_save_iter = pretrained_save_iter
         self.pretrained_nerf_path = pretrained_nerf_path
 
+        self.remove_rays = False
+
         super().__init__(
             **kwargs
         )
@@ -484,12 +486,18 @@ class FrozenFlameTrainer(FlameTrainer):
         _, render_kwargs_train, render_kwargs_test = self.create_nerf_model()
 
         self._train_prepare(50001)
+        self.global_step=10000
+        self.update_trans_epsilon()
+        self.old_trans_epsilon = self.trans_epsilon
         self.update_sample_values(train_phase=False)
+        print(self.old_trans_epsilon, self.n_central_samples, self.n_additional_samples)
 
         self.vertices = self.flame_vertices()
 
+        self.remove_rays = True
+
         torch.cuda.empty_cache()
-        i="load_nerf_test"
+        i="load_nerf_test2_remove_rays_add"
         self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
             poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
@@ -504,6 +512,8 @@ class FrozenFlameTrainer(FlameTrainer):
         # torch.cuda.empty_cache()
         # self.render_video(i=i, render_poses=render_poses, hwf=hwf,
         # render_kwargs_test=render_kwargs_test)
+
+        self.remove_rays = False
 
         torch.cuda.empty_cache()
         

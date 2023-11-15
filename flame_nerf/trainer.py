@@ -30,6 +30,8 @@ from flame_nerf.nerf_pytorch.run_nerf_helpers import (
 from flame_nerf.utils import load_obj_from_config
 from FLAME import FLAME
 
+from flame_nerf.mesh_utils import intersection_points_on_mesh
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -379,6 +381,15 @@ class FlameTrainer(Trainer):
         if self.f_trans is not None:
             pts += self.f_trans
 
+        if self.remove_rays:
+            mass_point = torch.quantile(vertices, 0.75, dim=0)
+            ray_idxs, intersection_points = intersection_points_on_mesh(self.faces, vertices, rays_o, rays_d)
+            mask_front = torch.where(intersection_points[:, 1] > mass_point[1].item(), False, True)
+            mask_intersect = torch.zeros(pts.shape[0], dtype=torch.bool)
+            mask_intersect[ray_idxs] = True
+            self.mask = torch.logical_and(mask_front, mask_intersect)
+            self.mask = self.mask.unsqueeze(-1)
+
         if kwargs['trans_mat'] is not None:
             trans_mat_organ = kwargs['trans_mat'][idx_f, :]
             pts = transform_pt(pts, trans_mat_organ)
@@ -447,6 +458,10 @@ class FlameTrainer(Trainer):
             fake_alpha = alpha
 
             alpha = torch.minimum(alpha, trans_alpha)
+            if self.remove_rays:
+                alpha = alpha * self.mask
+                fake_alpha = fake_alpha * self.mask
+                self.mask = None
 
         weights = alpha * torch.cumprod(
             torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1
@@ -518,6 +533,15 @@ class FlameTrainer(Trainer):
 
             if self.f_trans is not None:
                 pts += self.f_trans
+
+            if self.remove_rays:
+                mass_point = torch.quantile(vertices, 0.75, dim=0)
+                ray_idxs, intersection_points = intersection_points_on_mesh(self.faces, vertices, rays_o, rays_d)
+                mask_front = torch.where(intersection_points[:, 1] > mass_point[1].item(), False, True)
+                mask_intersect = torch.zeros(pts.shape[0], dtype=torch.bool)
+                mask_intersect[ray_idxs] = True
+                self.mask = torch.logical_and(mask_front, mask_intersect)
+                self.mask = self.mask.unsqueeze(-1)
 
             if kwargs['trans_mat'] is not None:
                 trans_mat_organ = kwargs['trans_mat'][idx_f, :]
