@@ -14,8 +14,9 @@ default_setup_params: &default_setup_params
     netchunk: 16384
     testskip: 80
 
+
 default_flame_nerf_params: &default_flame_nerf_params
-  epsilon: 0.016
+  epsilon: 0.006
   fake_epsilon: 0.04
   trans_the_smallest_epsilon: 0.15
   trans_the_biggest_epsilon: 0.005
@@ -32,21 +33,21 @@ default_nerf_setup_params: &default_nerf_setup_params
     N_samples: 110
     N_importance: 300
 
-dataset_face_M1000N_setup: &dataset_face_M1000N_setup
+dataset_face_m1047S_setup: &dataset_face_m1047S_setup
     basedir: "logs"
-    datadir: "data/face_M1000_N"
+    datadir: "data/face_m1047_S"
     dataset_type: "blender"
     near: 3.0
     far: 5.5
 
-face_M1000N_flame_nerf:
+face_m1047S_flame_nerf:
   module: "flame_nerf.FlameTrainer"
   kwargs:
     <<: *default_setup_params
     <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
-    <<: *dataset_face_M1000N_setup
-    expname: "M1000N_enhanced_mode_true_start_after_2k"
+    <<: *dataset_face_m1047S_setup
+    expname: "m1047S_enhanced_mode_true_start_after_1_eps_0_006_lr_0_001"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:

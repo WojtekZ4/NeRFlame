@@ -83,7 +83,7 @@ class FlameTrainer(Trainer):
         self.f_trans = nn.Parameter(torch.zeros(1, 3).float().to(self.device))
         self.vertices_mal = nn.Parameter(8 * torch.ones(1, 1).float().to(self.device))
 
-        f_lr = 0.0005
+        f_lr = 0.001
         f_wd = 0.0001
         self.f_opt = torch.optim.Adam(
             params=[
@@ -537,7 +537,7 @@ class FlameTrainer(Trainer):
             batch_rays, i, target_s,
     ):
 
-        if self.global_step > 2000:
+        if self.global_step > 1:
             self.move_mesh = True
 
         self.update_trans_epsilon()

@@ -12,13 +12,13 @@ torch.set_default_tensor_type('torch.cuda.FloatTensor')
     "--hparams_path",
     help="Type of selected dataset",
     type=str,
-    default="scripts/configs/faces_M1000_N.yaml"
+    default="scripts/configs/faces_m1047_S.yaml"
 )
 @click.option(
     "--model",
     help="Selected model",
     type=str,
-    default="face_M1000N_flame_nerf"
+    default="face_m1047S_flame_nerf"
 )
 def main(
         hparams_path: str,
