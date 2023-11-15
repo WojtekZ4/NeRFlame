@@ -12,7 +12,7 @@ default_setup_params: &default_setup_params
     half_res: true
     chunk: 16384
     netchunk: 16384
-    testskip: 80
+    testskip: 16
 
 
 default_flame_nerf_params: &default_flame_nerf_params
