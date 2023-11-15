@@ -88,7 +88,11 @@ class FrozenFlameTrainer(FlameTrainer):
                             input_ch_views=input_ch_views, use_viewdirs=self.use_viewdirs).to(device)
             self.pretrained_nerf_fine.load_state_dict(ckpt['network_fine_state_dict'])
 
-        self.old_trans_epsilon = ckpt['trans_epsilon']
+        if 'trans_epsilon' in ckpt:
+            self.old_trans_epsilon = ckpt['trans_epsilon']
+        else:
+            self.old_trans_epsilon = self.trans_the_smallest_epsilon
+
         for param in self.pretrained_nerf.parameters():
             param.requires_grad = False
         if self.pretrained_nerf_fine is not None:
@@ -497,7 +501,7 @@ class FrozenFlameTrainer(FlameTrainer):
         self.remove_rays = True
 
         torch.cuda.empty_cache()
-        i="load_nerf_test2_remove_rays_add"
+        i="load_clean_nerf_remove_rays"
         self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
             poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
