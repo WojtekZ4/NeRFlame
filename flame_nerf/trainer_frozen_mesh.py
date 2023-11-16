@@ -48,16 +48,22 @@ class FrozenFlameTrainer(FlameTrainer):
             **kwargs
         )
 
+    def _train_prepare(self, n_iters):
+        self.N_iters = n_iters
+        if self.enhanced_mode:
+            if self.enhanced_mode_start_iter is None:
+                self.enhanced_mode_start_iter = self.enhanced_mode_freeze
+            if self.enhanced_mode_stop_iter is None:
+                self.enhanced_mode_stop_iter = n_iters
+
     def core_optimization_loop(
             self,
             optimizer, render_kwargs_train,
             batch_rays, i, target_s,
     ):
-        if self.enhanced_mode_freeze is not None:
-            if self.global_step <= self.enhanced_mode_freeze: 
-                self.update_trans_epsilon()
-        else:
+        if self.global_step > self.enhanced_mode_freeze: 
             self.update_trans_epsilon()
+
         self.vertices = self.flame_vertices()
 
         rgb, disp, acc, extras = render(
@@ -221,9 +227,7 @@ class FrozenFlameTrainer(FlameTrainer):
         if self.enhanced_mode is False:
             alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.epsilon)
             fake_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.fake_epsilon)
-        else:
-            trans_alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_epsilon)
-
+        else:              
             # calc alpha from nerf
             raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
             dists = z_vals[..., 1:] - z_vals[..., :-1]
@@ -242,10 +246,14 @@ class FrozenFlameTrainer(FlameTrainer):
                     noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
                     noise = torch.Tensor(noise)
 
-            alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+            if self.global_step <= self.enhanced_mode_freeze:
+                alpha = flame_based_alpha_calculator_f_relu(distances_f, m, self.trans_epsilon)
+            else:
+                alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+                alpha = (distances_f <= self.trans_epsilon) * alpha
+
             fake_alpha = alpha
 
-            alpha = torch.minimum(alpha, trans_alpha)
             if self.remove_rays:
                 alpha = alpha * self.mask
                 fake_alpha = fake_alpha * self.mask
