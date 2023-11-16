@@ -588,9 +588,9 @@ class FlameTrainer(Trainer):
                     'f_pose': self.f_pose,
                     'f_trans': self.f_trans,
                     'f_neck_pose': self.f_neck_pose,
-                    'epsilon': render_kwargs_test['epsilon'],
-                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                    'epsilon': self.epsilon,
+                    'fake_epsilon': self.fake_epsilon,
+                    'trans_epsilon': self.trans_epsilon,
                 }, path)
             else:
                 torch.save({
@@ -604,9 +604,9 @@ class FlameTrainer(Trainer):
                     'f_pose': self.f_pose,
                     'f_trans': self.f_trans,
                     'f_neck_pose': self.f_neck_pose,
-                    'epsilon': render_kwargs_test['epsilon'],
-                    'fake_epsilon': render_kwargs_test['fake_epsilon'],
-                    'trans_epsilon': render_kwargs_test['trans_epsilon'],
+                    'epsilon': self.epsilon,
+                    'fake_epsilon': self.fake_epsilon,
+                    'trans_epsilon': self.trans_epsilon,
                 }, path)
             print('Saved checkpoints at', path)
 
@@ -661,7 +661,8 @@ class FlameTrainer(Trainer):
                             'loss': img_loss,
                             'psnr': img_psnr_1,
                             'img_ssim': img_ssim,
-                            'img_lpips': img_lpips
+                            'img_lpips': img_lpips,
+                            'trans_epsilon': self.trans_epsilon
                         }
                     }
                 )
@@ -669,7 +670,7 @@ class FlameTrainer(Trainer):
                 outstats_path = os.path.join(testsavedir, 'stats.txt')
                 with open(outstats_path, 'w') as fp:
                     for s, v in {"img_loss": img_loss, "img_psnr": img_psnr_1, "img_ssim": img_ssim,
-                                 "img_lpips": img_lpips}.items():
+                                 "img_lpips": img_lpips, 'trans_epsilon': self.trans_epsilon}.items():
                         fp.write('%s %f\n' % (s, v))
 
             print('Saved test set')
@@ -680,7 +681,7 @@ class FlameTrainer(Trainer):
             radian = np.pi / 180.0
             with torch.no_grad():
                 f_pose_rot = self.f_pose.clone().detach()
-                f_pose_rot[0, 3] = 30.0 * radian
+                f_pose_rot[0, 3] = 10.0 * radian
 
                 vertice = self.flame_vertices_test(
                     self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
