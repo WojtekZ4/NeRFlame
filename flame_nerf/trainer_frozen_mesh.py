@@ -437,7 +437,6 @@ class FrozenFlameTrainer(FlameTrainer):
 
             print('test poses shape', poses[i_test].shape)
 
-            self.remove_rays = True
             rgbs, _ = render_path(
                 poses[i_test], hwf, self.K, self.chunk_render,
                 render_kwargs_test,
@@ -445,7 +444,6 @@ class FrozenFlameTrainer(FlameTrainer):
                 savedir=testsavedir,
                 render_factor=self.render_factor,
             )
-            self.remove_rays = False
 
             images_o = torch.tensor(images[i_test]).to(device=device, dtype=torch.float)
             rgbs = torch.tensor(rgbs).to(device=device, dtype=torch.float)
@@ -592,3 +590,41 @@ class FrozenFlameTrainer(FlameTrainer):
             moviebase = os.path.join(self.basedir, self.expname, '{}_spiral_f_{:06d}_'.format(self.expname, i))
         imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
         imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
+    def render_load(self):
+        hwf, poses, i_test, i_val, i_train, images, render_poses = self.load_data()
+
+        poses = torch.Tensor(poses).to(device)
+
+        if self.render_test:
+            render_poses = np.array(poses[i_test])
+            render_poses = torch.Tensor(render_poses).to(self.device)
+
+        hwf = self.cast_intrinsics_to_right_types(hwf=hwf)
+        self.create_log_dir_and_copy_the_config_file()
+        _, render_kwargs_train, render_kwargs_test = self.create_nerf_model()
+
+        self._train_prepare(40001)
+
+        self.vertices = self.flame_vertices()
+
+        print(self.trans_epsilon)
+
+        torch.cuda.empty_cache()
+        i="pose0"
+        self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+
+        i="remove_rays"
+        torch.cuda.empty_cache()
+        self.render_rot1(i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+
+        torch.cuda.empty_cache()
+        self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+
+        # torch.cuda.empty_cache()
+        # self.render_video(i=i, render_poses=render_poses, hwf=hwf,
+        # render_kwargs_test=render_kwargs_test)
+
+        torch.cuda.empty_cache()
