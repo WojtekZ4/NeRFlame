@@ -577,11 +577,38 @@ class FrozenFlameTrainer(FlameTrainer):
             render_kwargs_test
     ):
         # Turn on testing mode
+        testsavedir = os.path.join(self.basedir, self.expname, 'video2')
+
+        os.makedirs(testsavedir, exist_ok=True)
+
         with torch.no_grad():
+            radian = np.pi / 180.0
+            f_pose_rot = self.f_pose.clone().detach()
+            f_pose_rot[0, 3] = 10.0 * radian
+
+            vertice = self.flame_vertices_test(
+                self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
+            )
+
+            #outmesh_path = os.path.join(testsavedir, 'face.obj')
+            #write_simple_obj(mesh_v=vertice.detach().cpu().numpy(), mesh_f=self.faces,
+            #                 filepath=outmesh_path)
+
+            triangles_org = self.vertices[self.faces.long(), :]
+            triangles_out = vertice[self.faces.long(), :]
+
+            trans_mat = recover_homogenous_affine_transformation(triangles_out, triangles_org)  # transform matrix
+
+            render_kwargs_test['trans_mat'] = trans_mat
+            render_kwargs_test['test_vertices'] = vertice
+
             self.remove_rays = True
             rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
-                                        render_kwargs_test)
+                                        render_kwargs_test, savedir=testsavedir) #f1042S_freeze_eps_inc
             self.remove_rays = False
+
+            render_kwargs_test['trans_mat'] = None
+            render_kwargs_test['test_vertices'] = None
 
         print('Done, saving', rgbs.shape, disps.shape)
         if isinstance(i, str):
@@ -610,21 +637,31 @@ class FrozenFlameTrainer(FlameTrainer):
         print(self.trans_epsilon)
 
         torch.cuda.empty_cache()
-        i="pose0"
-        self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+        #i="pose0"
+        #self.render_testset(
+        #    i=i, render_poses=render_poses, hwf=hwf,
+        #    poses=poses, i_test=i_test, images=images,
+        #    render_kwargs_test=render_kwargs_test)
 
-        i="remove_rays"
+        #i="remove_rays"
+        #torch.cuda.empty_cache()
+        """
+        self.render_rot1(
+            i=i, render_poses=render_poses,
+            hwf=hwf, poses=poses, i_test=i_test, images=images,
+            render_kwargs_test=render_kwargs_test
+        )
+
         torch.cuda.empty_cache()
-        self.render_rot1(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
-
+        self.render_rot2(
+            i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images,
+            render_kwargs_test=render_kwargs_test
+        )
+        """
+        i = "video"
         torch.cuda.empty_cache()
-        self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
-
-        # torch.cuda.empty_cache()
-        # self.render_video(i=i, render_poses=render_poses, hwf=hwf,
-        # render_kwargs_test=render_kwargs_test)
+        self.render_video(i=i, render_poses=render_poses, hwf=hwf,
+        render_kwargs_test=render_kwargs_test)
 
         torch.cuda.empty_cache()

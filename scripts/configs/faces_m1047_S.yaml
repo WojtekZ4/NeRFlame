@@ -3,7 +3,7 @@ default_setup_params: &default_setup_params
     use_viewdirs: false
     N_rand: 1024
     device: 'cuda'
-    i_weights: 5000
+    i_weights: 10000
     i_testset: 5000
     i_video: 100000
     i_print: 50000
@@ -13,24 +13,20 @@ default_setup_params: &default_setup_params
     chunk: 16384
     netchunk: 16384
     N_samples: 110
-    N_importance: 140
+    N_importance: 300
     testskip: 16
+    no_reload: False
 
 default_flame_nerf_params: &default_flame_nerf_params
   epsilon: 0.016
   fake_epsilon: 0.04
-  trans_the_smallest_epsilon: 0.1
-  trans_the_biggest_epsilon: 0.005
+  trans_the_smallest_epsilon: 0.016
+  trans_the_biggest_epsilon: 0.1
   n_the_farthest_samples: 60
   n_central_samples: 10
   n_additional_samples: 4
   chunk_render: 16384
-  enhanced_mode_switch: 0.6
-  #eps_increase_multiplier: 3
-  additional_samples: true
-  samples_multiplier: 2
-  use_pretrained_nerf: true
-  pretrained_save_iter: 10000
+  enhanced_mode_freeze: 10000
 
 
 default_flame_setup_params: &default_flame_setup_params
@@ -42,19 +38,19 @@ default_flame_setup_params: &default_flame_setup_params
 
 dataset_face_m1047S_setup: &dataset_face_m1047S_setup
     basedir: "logs"
-    datadir: "data/face_m1047_S/face_m1047_S"
+    datadir: "data/face_m1047_S"
     dataset_type: "blender"
     near: 3.0
     far: 5.5
 
 face_m1047S_flame_nerf:
-  module: "flame_nerf.FlameTrainer"
+  module: "flame_nerf.trainer_frozen_mesh.FrozenFlameTrainer"
   kwargs:
     <<: *default_setup_params
 #    <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_m1047S_setup
-    expname: "m1047S_additional_sampling_2_0.005_eps_load_nerf"
+    expname: "m1047S_freeze_eps_increase"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:

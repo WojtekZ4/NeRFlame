@@ -14,7 +14,7 @@ default_setup_params: &default_setup_params
     netchunk: 16384
     N_samples: 110
     N_importance: 300
-    testskip: 80
+    testskip: 16
     no_reload: False
 
 default_flame_nerf_params: &default_flame_nerf_params
@@ -37,7 +37,7 @@ default_flame_setup_params: &default_flame_setup_params
 
 dataset_face_f1036A_setup: &dataset_face_f1036A_setup
     basedir: "logs"
-    datadir: "data/face_f1036_A/face_f1036_A"
+    datadir: "data/face_f1036_A"
     dataset_type: "blender"
     near: 3.0
     far: 5.5
@@ -49,7 +49,7 @@ face_f1036A_flame_nerf:
 #    <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_f1036A_setup
-    expname: "f1036A_test"
+    expname: "f1036A_freeze_10000_eps_increase"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:
