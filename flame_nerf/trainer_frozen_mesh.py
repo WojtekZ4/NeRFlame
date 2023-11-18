@@ -577,18 +577,24 @@ class FrozenFlameTrainer(FlameTrainer):
             render_kwargs_test
     ):
         # Turn on testing mode
-        testsavedir = os.path.join(self.basedir, self.expname, 'rec')
+        testsavedir = os.path.join(self.basedir, self.expname, 'video_from_wome_razy__minus_2')
 
         os.makedirs(testsavedir, exist_ok=True)
 
         with torch.no_grad():
-            """
+
             radian = np.pi / 180.0
-            f_pose_rot = self.f_pose.clone().detach()
-            f_pose_rot[0, 3] = 10.0 * radian
+            f_exp = self.f_exp.clone().detach()
+            f_exp *= -3
+
+            #f_pose_rot = self.f_pose.clone().detach()
+            #f_pose_rot[0, 3] = 30.0 * radian
+
+            #f_exp = torch.load('f_exp.pt') * -2
+            #torch.save()
 
             vertice = self.flame_vertices_test(
-                self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
+                self.f_shape, f_exp, self.f_pose, self.f_neck_pose, self.f_trans
             )
 
             #outmesh_path = os.path.join(testsavedir, 'face.obj')
@@ -602,7 +608,7 @@ class FrozenFlameTrainer(FlameTrainer):
 
             render_kwargs_test['trans_mat'] = trans_mat
             render_kwargs_test['test_vertices'] = vertice
-            """
+
 
             #self.remove_rays = True
             rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
