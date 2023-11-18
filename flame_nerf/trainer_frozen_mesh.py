@@ -577,11 +577,12 @@ class FrozenFlameTrainer(FlameTrainer):
             render_kwargs_test
     ):
         # Turn on testing mode
-        testsavedir = os.path.join(self.basedir, self.expname, 'video2')
+        testsavedir = os.path.join(self.basedir, self.expname, 'rec')
 
         os.makedirs(testsavedir, exist_ok=True)
 
         with torch.no_grad():
+            """
             radian = np.pi / 180.0
             f_pose_rot = self.f_pose.clone().detach()
             f_pose_rot[0, 3] = 10.0 * radian
@@ -601,11 +602,12 @@ class FrozenFlameTrainer(FlameTrainer):
 
             render_kwargs_test['trans_mat'] = trans_mat
             render_kwargs_test['test_vertices'] = vertice
+            """
 
-            self.remove_rays = True
+            #self.remove_rays = True
             rgbs, disps = render_path(render_poses, hwf, self.K, self.chunk_render,
                                         render_kwargs_test, savedir=testsavedir) #f1042S_freeze_eps_inc
-            self.remove_rays = False
+            #self.remove_rays = False
 
             render_kwargs_test['trans_mat'] = None
             render_kwargs_test['test_vertices'] = None
