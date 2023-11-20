@@ -31,7 +31,7 @@ def main(
     torch.manual_seed(42)  # 0
 
     trainer = load_obj_from_config(cfg=hparams)
-    trainer.train(N_iters=50001)
+    trainer.train(N_iters=40001)
 
 
 if __name__ == "__main__":
