@@ -14,7 +14,7 @@ default_setup_params: &default_setup_params
     netchunk: 16384
     N_samples: 110
     N_importance: 300
-    testskip: 80
+    testskip: 16
     no_reload: False
 
 default_flame_nerf_params: &default_flame_nerf_params
