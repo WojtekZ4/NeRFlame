@@ -502,7 +502,7 @@ class FrozenFlameTrainer(FlameTrainer):
         radian = np.pi / 180.0
         with torch.no_grad():
             f_pose_rot = self.f_pose.clone().detach()
-            f_pose_rot[0, 3] = 10.0 * radian
+            f_pose_rot[0, 3] = self.mul * radian
 
             vertice = self.flame_vertices_test(
                 self.f_shape, self.f_exp, f_pose_rot, self.f_neck_pose, self.f_trans
@@ -610,18 +610,20 @@ class FrozenFlameTrainer(FlameTrainer):
         print(self.trans_epsilon)
 
         torch.cuda.empty_cache()
-        i="pose0"
-        self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+        for j, val in enumerate(torch.arange(-6, 6)):
+            self.mul = val
+            # i="pose0"
+            # self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
+            #     poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
-        i="remove_rays"
-        torch.cuda.empty_cache()
-        self.render_rot1(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
-
-        torch.cuda.empty_cache()
-        self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
-            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+            i="remove_rays" + str(j)
+            torch.cuda.empty_cache()
+            self.render_rot1(i=i, render_poses=render_poses, hwf=hwf,
+                poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+            
+            # torch.cuda.empty_cache()
+            # self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
+            #     poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
         # torch.cuda.empty_cache()
         # self.render_video(i=i, render_poses=render_poses, hwf=hwf,
