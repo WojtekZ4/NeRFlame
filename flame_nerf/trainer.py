@@ -138,8 +138,8 @@ class FlameTrainer(Trainer):
             vertices = torch.squeeze(vertices)
             # vertices = vertices.cuda()
 
-            vertices = vertices[:, [0, 2, 1]]
-            vertices[:, 1] = -vertices[:, 1]
+            # vertices = vertices[:, [0, 2, 1]]
+            # vertices[:, 1] = -vertices[:, 1]
             vertices *= self.vertices_mal
 
             return vertices
@@ -155,8 +155,8 @@ class FlameTrainer(Trainer):
         vertices = torch.squeeze(vertices)
         # vertices = vertices.cuda()
 
-        vertices = vertices[:, [0, 2, 1]]
-        vertices[:, 1] = -vertices[:, 1]
+        # vertices = vertices[:, [0, 2, 1]]
+        # vertices[:, 1] = -vertices[:, 1]
         vertices *= self.vertices_mal
 
         if self.tensorboard_logging:
