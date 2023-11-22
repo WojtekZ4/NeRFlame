@@ -83,7 +83,7 @@ class FlameTrainer(Trainer):
         self.f_pose = nn.Parameter(torch.zeros(1, 6).float().to(self.device))
         self.f_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(self.device))
         self.f_trans = nn.Parameter(torch.zeros(1, 3).float().to(self.device))
-        self.vertices_mal = nn.Parameter(8 * torch.ones(1, 1).float().to(self.device))
+        self.vertices_mal = nn.Parameter(21 * torch.ones(1, 1).float().to(self.device))
 
         f_lr = 0.001
         f_wd = 0.0001
