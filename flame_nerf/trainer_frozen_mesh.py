@@ -610,18 +610,18 @@ class FrozenFlameTrainer(FlameTrainer):
         print(self.trans_epsilon)
 
         torch.cuda.empty_cache()
-        # i="pose0"
-        # self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
-        #     poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+        i="pose0"
+        self.render_testset(i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
         i="remove_rays"
         torch.cuda.empty_cache()
         self.render_rot1(i=i, render_poses=render_poses, hwf=hwf,
             poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
-        # torch.cuda.empty_cache()
-        # self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
-        #     poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
+        torch.cuda.empty_cache()
+        self.render_rot2(i=i, render_poses=render_poses, hwf=hwf,
+            poses=poses, i_test=i_test, images=images, render_kwargs_test=render_kwargs_test)
 
         # torch.cuda.empty_cache()
         # self.render_video(i=i, render_poses=render_poses, hwf=hwf,
