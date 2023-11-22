@@ -407,8 +407,11 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
 
-    fake_weights = alpha_org * torch.cumprod(
-        torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
+    fake_weights = alpha * torch.cumprod(
+        torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+
+    # fake_weights = alpha_org * torch.cumprod(
+    #     torch.cat([torch.ones((alpha_org.shape[0], 1)), 1. - alpha_org + 1e-10], -1), -1)[:, :-1]
 
     # if enhanced_mode:
     #     fake_weights = weights
@@ -1506,7 +1509,7 @@ def train():
     f_neck_pose = nn.Parameter(torch.zeros(1, 3).float().to(device))
     f_trans = nn.Parameter(torch.zeros(1, 3).float().to(device))
 
-    f_lr = 0.001
+    f_lr = 0.01
     f_wd = 0.0001
     f_opt = torch.optim.Adam(
         params=[f_shape, f_exp, f_pose, f_neck_pose, f_trans],
@@ -1688,9 +1691,9 @@ def train():
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
     # N_iters = 200000 + 1
-    N_iters = 150000 + 1
     # N_iters = 100000 + 1
-    # N_iters = 70000 + 1
+    # N_iters = 100000 + 1
+    N_iters = 60000 + 1
     # N_iters = 50000 + 1
     # N_iters = 40000 + 1
     # N_iters = 20000 + 1
@@ -1773,6 +1776,10 @@ def train():
 
         f_opt.zero_grad()
         optimizer.zero_grad()
+
+        with torch.no_grad():
+            f_shape = torch.clamp(f_shape, min=-1.9, max=1.9)
+            f_exp = torch.clamp(f_exp, min=-1.9, max=1.9)
 
         vertice, _ = flamelayer(f_shape, f_exp, f_pose, neck_pose=f_neck_pose, transl=f_trans)
         vertice = torch.squeeze(vertice)
