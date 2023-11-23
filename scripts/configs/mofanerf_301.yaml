@@ -1,0 +1,56 @@
+default_setup_params: &default_setup_params
+    no_batching: false
+    use_viewdirs: false
+    N_rand: 1024
+    device: 'cuda'
+    i_weights: 10000
+    i_testset: 5000
+    i_video: 100000
+    i_print: 50000
+    input_dims_embed: 3
+    white_bkgd: True
+    half_res: true
+    chunk: 196608 #16384
+    netchunk: 196608 #16384
+    testskip: 1
+    no_reload: False
+
+default_flame_nerf_params: &default_flame_nerf_params
+  epsilon: 0.016
+  fake_epsilon: 0.04
+  trans_the_smallest_epsilon: 0.16
+  trans_the_biggest_epsilon: 1.0
+  n_the_farthest_samples: 60
+  n_central_samples: 10
+  n_additional_samples: 4
+  chunk_render: 16384
+  enhanced_mode_freeze: 10000
+
+
+
+default_flame_setup_params: &default_flame_setup_params
+  flame_model_path: './FLAME/model/generic_model.pkl'
+
+default_nerf_setup_params: &default_nerf_setup_params
+   N_samples: 110
+   N_importance: 300
+
+dataset_setup: &dataset_setup
+    basedir: "logs"
+    datadir: "data/cheek_blowing_301"
+    dataset_type: "blender"
+    near: 8.0
+    far: 26.0
+
+frozen_flame_nerf:
+  module: "flame_nerf.trainer_frozen_mesh.FrozenFlameTrainer"
+  kwargs:
+    <<: *default_setup_params
+    <<: *default_nerf_setup_params
+    <<: *default_flame_nerf_params
+    <<: *dataset_setup
+    expname: "mofanerf_cheek_blowing_301"
+    flame_config:
+      module: "FLAME.FlameConfig"
+      kwargs:
+        <<: *default_flame_setup_params
