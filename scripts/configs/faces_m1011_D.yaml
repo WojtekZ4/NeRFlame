@@ -5,7 +5,7 @@ default_setup_params: &default_setup_params
     device: 'cuda'
     i_weights: 10000
     i_testset: 5000
-    i_video: 100000
+    i_video: 5000
     i_print: 50000
     input_dims_embed: 3
     white_bkgd: True
@@ -26,7 +26,7 @@ default_flame_nerf_params: &default_flame_nerf_params
   n_central_samples: 10
   n_additional_samples: 4
   chunk_render: 16384
-  enhanced_mode_freeze: 10000
+  enhanced_mode_freeze: 40000
 
 
 
@@ -51,7 +51,7 @@ face_m1011D_flame_nerf:
 #    <<: *default_nerf_setup_params
     <<: *default_flame_nerf_params
     <<: *dataset_face_m1011D_setup
-    expname: "m1011D_freeze_eps_inc"
+    expname: "m1011D_video"
     flame_config:
       module: "FLAME.FlameConfig"
       kwargs:

@@ -73,7 +73,8 @@ def load_blender_data(basedir, half_res=False, testskip=1):
 
     # render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
     # render_poses = torch.stack([pose_spherical(angle, 0.0, 4.0) for angle in np.linspace(-180,180,40+1)[:-1]], 0)
-    render_poses = torch.stack([pose_spherical(angle, -10.0, 4.0) for angle in np.linspace(-180, 180, 40 + 1)[:-1]], 0)
+    render_poses = torch.stack([pose_spherical(angle, -10.0, 4.0) for angle in np.linspace(-200, -130, 5 + 1)[:-1]], 0)
+    render_poses = render_poses[[1, 2, 3], :]
 
     if half_res:
         H = H // 2
