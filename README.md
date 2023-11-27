@@ -19,6 +19,7 @@ Tested on Python 3.8.
 
 ```
 git clone https://github.com/WojtekZ4/NeRFlame.git
+pip install -e NeRFlame
 cd NeRFlame
 pip install -r requirements.txt
 ```
