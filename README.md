@@ -4,11 +4,11 @@ Traditional 3D face models are based on mesh representations with texture. One o
 Unfortunately, such models have problems with capturing geometric and appearance details. 
 In contrast to mesh representation, the neural radiance field  (NeRF) produces extremely sharp renders. But implicit methods are hard to animate and do not generalize well to unseen expressions. It is not trivial to effectively control NeRF models to obtain face manipulation. 
 
-<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/m1047_S_yawn.gif" width="300" height="300">
+<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/turn1.gif" width="300" height="300">
 
 This repository proposes a novel approach, named NeRFlame, which combines the strengths of both NeRF and FLAME methods. Our method enables high-quality rendering capabilities of NeRF while also offering complete control over the visual appearance, similar to FLAME.
 
-<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/f1036_A_turn.gif" width="300" height="300">
+<img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/turn2.gif" width="300" height="300">
 
 Unlike conventional NeRF-based architectures that utilize neural networks to model RGB colors and volume density, NeRFlame employs FLAME mesh as an explicit density volume. As a result, color values are non-zero only in the proximity of the FLAME mesh. This FLAME backbone is then integrated into the NeRF architecture to predict RGB colors, allowing NeRFlame to explicitly model volume density and implicitly model RGB colors.
 
@@ -35,7 +35,7 @@ Download FLAME models and landmark embedings and place them inside `FLAME` folde
 
 To train a face:
 ```
-python run_nerf.py --config configs/face_M1000_N.txt
+python scripts/experiments/run_nerf.py --hparams_path scripts/configs/faces_M1000_N.yaml --model face_M1000N_flame_nerf
 ```
 
 ---
@@ -49,20 +49,20 @@ To play with other faces presented in the paper, download the data [here](https:
 To train NeRFlame on different datasets: 
 
 ```
-python run_nerf.py --config configs/{DATASET}.txt
+python scripts/experiments/run_nerf.py --hparams_path scripts/configs/{DATASET_CONFIG}.yaml --model {DATASET_MODEL}
 ```
 
-replace `{DATASET}` with `face_f1014_F` | `face_f1036_A` | `face_m1007_S` | `face_m1011_D` | etc.
+replace `{DATASET_CONFIG}` with `faces_M1000_N` | `faces_f1036_A` | `faces_m1011_D`| etc. 
+and `{DATASET_MODEL}` with `face_M1000N_flame_nerf` | `face_f1036A_flame_nerf` | `face_m1011D_flame_nerf`| etc.
 
 ---
 
 To test NeRFlame trained on different datasets: 
 
 ```
-python run_nerf.py --config configs/{DATASET}.txt --render_only
+python scripts/experiments/run_nerf.py --hparams_path scripts/configs/{DATASET_CONFIG}.yaml --model {DATASET_MODEL} --render_only
 ```
 
-replace `{DATASET}` with `face_f1014_F` | `face_f1036_A` | `face_m1007_S` | `face_m1011_D` | etc.
 
 ## Citation
 
