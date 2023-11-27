@@ -2,16 +2,16 @@
 
 Traditional 3D face models are based on mesh representations with texture. One of the most important models is FLAME (Faces Learned with an Articulated Model and Expressions), which produces meshes of human faces that are fully controllable. 
 Unfortunately, such models have problems with capturing geometric and appearance details. 
-In contrast to mesh representation, the neural radiance field  (NeRF) produces extremely sharp renders. But implicit methods are hard to animate and do not generalize well to unseen expressions. It is not trivial to effectively control NeRF models to obtain face manipulation. 
+In contrast to mesh representation, the neural radiance field  (NeRF) produces extremely sharp renders. However, implicit methods are hard to animate and do not generalize well to unseen expressions. It is not trivial to effectively control NeRF models to obtain face manipulation. 
 
 <img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/turn1.gif" width="300" height="300">
 
-This repository proposes a novel approach, named NeRFlame, which combines the strengths of both NeRF and FLAME methods. Our method enables high-quality rendering capabilities of NeRF while also offering complete control over the visual appearance, similar to FLAME.
+The present paper proposes a novel approach, named NeRFlame, which combines the strengths of both NeRF and FLAME methods. Our method enables high-quality rendering capabilities of NeRF while also offering complete control over the visual appearance, similar to FLAME.
 
 <img src="https://github.com/WojtekZ4/NeRFlame/blob/main/gifs/turn2.gif" width="300" height="300">
 
-Unlike conventional NeRF-based architectures that utilize neural networks to model RGB colors and volume density, NeRFlame employs FLAME mesh as an explicit density volume. As a result, color values are non-zero only in the proximity of the FLAME mesh. This FLAME backbone is then integrated into the NeRF architecture to predict RGB colors, allowing NeRFlame to explicitly model volume density and implicitly model RGB colors.
 
+In contrast to traditional NeRF-based structures that use neural networks for RGB color and volume density modeling, our approach utilizes the FLAME mesh as a distinct density volume. Consequently, color values exist only in the vicinity of the FLAME mesh. This FLAME framework is seamlessly incorporated into the NeRF architecture for predicting RGB colors, enabling our model to explicitly represent volume density and implicitly capture RGB colors.
 
 ## Installation
 
