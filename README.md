@@ -13,6 +13,8 @@ The present paper proposes a novel approach, named NeRFlame, which combines the 
 
 In contrast to traditional NeRF-based structures that use neural networks for RGB color and volume density modeling, our approach utilizes the FLAME mesh as a distinct density volume. Consequently, color values exist only in the vicinity of the FLAME mesh. This FLAME framework is seamlessly incorporated into the NeRF architecture for predicting RGB colors, enabling our model to explicitly represent volume density and implicitly capture RGB colors.
 
+[Link](https://arxiv.org/pdf/2303.06226.pdf) to paper.
+
 ## Installation
 
 Tested on Python 3.8.
